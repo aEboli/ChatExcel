@@ -197,3 +197,33 @@ test("Agent 接口把图片和模型选项传给会话管理器", async (t) => {
   assert.equal(captured.options.reasoningEffort, "high");
   assert.equal(captured.options.attachments.length, 1);
 });
+
+test("Agent 接口在事件流请求中转发增量并发送最终结果", async (t) => {
+  const baseUrl = await startServer(t, {
+    sessionManager: {
+      async start(message, sessionId, options, hooks) {
+        hooks.onEvent?.({ type: "text_delta", text: "流" });
+        return { sessionId, status: "completed", message: "流式完成", step: 1 };
+      },
+      async cancel() {},
+    },
+  });
+  const response = await fetch(`${baseUrl}/api/sessions`, {
+    method: "POST",
+    headers: {
+      Origin: "https://localhost:3210",
+      Accept: "text/event-stream",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ sessionId: "session-stream-01", message: "流式" }),
+  });
+  const body = await response.text();
+
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get("content-type"), /text\/event-stream/);
+  assert.match(body, /event: delta/);
+  assert.match(body, /"text_delta"/);
+  assert.match(body, /event: result/);
+  assert.match(body, /流式完成/);
+  assert.match(body, /event: done/);
+});

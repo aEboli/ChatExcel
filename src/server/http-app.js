@@ -1,6 +1,7 @@
 import express from "express";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { randomUUID } from "node:crypto";
 import { loadCodexConfig, toPublicConfig } from "./config.js";
 import { APP_NAME, APP_VERSION, SERVICE_ORIGIN, SERVICE_PORT } from "../shared/app-info.js";
 
@@ -36,6 +37,63 @@ function normalizedHeader(value) {
 
 function errorBody(code, message) {
   return { ok: false, error: { code, message } };
+}
+
+function wantsEventStream(req) {
+  return req.get("accept")?.toLowerCase().includes("text/event-stream") === true;
+}
+
+function streamError(error) {
+  const statusCode = Number.isInteger(error?.statusCode) ? error.statusCode : 500;
+  const code = typeof error?.code === "string" ? error.code : "INTERNAL_ERROR";
+  const message = error?.expose === true && error instanceof Error
+    ? error.message
+    : statusCode >= 500
+      ? "本地服务处理请求失败。"
+      : error instanceof Error
+        ? error.message
+        : "请求失败。";
+  return { statusCode, body: errorBody(code, message) };
+}
+
+function writeStreamEvent(res, event, payload) {
+  if (res.writableEnded || res.destroyed) return false;
+  try {
+    res.write(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function sendSessionResponse(req, res, operation, { statusCode = 200, onDisconnect } = {}) {
+  if (!wantsEventStream(req)) {
+    const result = await operation();
+    res.status(statusCode).json({ ok: true, ...result });
+    return;
+  }
+
+  res.status(200).set({
+    "Cache-Control": "no-cache, no-transform",
+    "Connection": "keep-alive",
+    "Content-Type": "text/event-stream; charset=utf-8",
+    "X-Accel-Buffering": "no",
+  });
+  res.flushHeaders?.();
+  const handleClose = () => {
+    if (!res.writableEnded) onDisconnect?.();
+  };
+  req.once("close", handleClose);
+  try {
+    const result = await operation((event) => writeStreamEvent(res, "delta", event));
+    writeStreamEvent(res, "result", result);
+    writeStreamEvent(res, "done", { ok: true });
+  } catch (error) {
+    writeStreamEvent(res, "error", streamError(error).body);
+  } finally {
+    req.off("close", handleClose);
+    if (!res.writableEnded) res.end();
+  }
 }
 
 function requireJson(req, _res, next) {
@@ -170,12 +228,22 @@ export function createApp({
     agentJson,
     async (req, res) => {
       const manager = requireSessionManager(sessionManager);
-      const result = await manager.start(req.body?.message, req.body?.sessionId, {
-        attachments: req.body?.attachments,
-        model: req.body?.model,
-        reasoningEffort: req.body?.reasoningEffort,
-      });
-      res.status(201).json({ ok: true, ...result });
+      const sessionId = req.body?.sessionId ?? randomUUID();
+      await sendSessionResponse(
+        req,
+        res,
+        (onEvent) => manager.start(
+          req.body?.message,
+          sessionId,
+          {
+            attachments: req.body?.attachments,
+            model: req.body?.model,
+            reasoningEffort: req.body?.reasoningEffort,
+          },
+          { onEvent },
+        ),
+        { statusCode: 201, onDisconnect: () => void manager.cancel(sessionId) },
+      );
     },
   );
 
@@ -186,12 +254,21 @@ export function createApp({
     agentJson,
     async (req, res) => {
       const manager = requireSessionManager(sessionManager);
-      const result = await manager.addMessage(req.params.sessionId, req.body?.message, {
-        attachments: req.body?.attachments,
-        model: req.body?.model,
-        reasoningEffort: req.body?.reasoningEffort,
-      });
-      res.json({ ok: true, ...result });
+      await sendSessionResponse(
+        req,
+        res,
+        (onEvent) => manager.addMessage(
+          req.params.sessionId,
+          req.body?.message,
+          {
+            attachments: req.body?.attachments,
+            model: req.body?.model,
+            reasoningEffort: req.body?.reasoningEffort,
+          },
+          { onEvent },
+        ),
+        { onDisconnect: () => void manager.cancel(req.params.sessionId) },
+      );
     },
   );
 
@@ -202,8 +279,16 @@ export function createApp({
     toolResultsJson,
     async (req, res) => {
       const manager = requireSessionManager(sessionManager);
-      const result = await manager.submitToolResults(req.params.sessionId, req.body?.results);
-      res.json({ ok: true, ...result });
+      await sendSessionResponse(
+        req,
+        res,
+        (onEvent) => manager.submitToolResults(
+          req.params.sessionId,
+          req.body?.results,
+          { onEvent },
+        ),
+        { onDisconnect: () => void manager.cancel(req.params.sessionId) },
+      );
     },
   );
 

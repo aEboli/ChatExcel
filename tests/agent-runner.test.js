@@ -163,3 +163,26 @@ test("把附件与模型选择传给 API 并发布上下文事件", async () => 
   assert.deepEqual(captured.attachments, attachments);
   assert.equal(events.some((event) => event.type === "context_updated"), true);
 });
+
+test("把服务端文本增量转换为助手增量事件", async () => {
+  const events = [];
+  const runner = new AgentRunner({
+    api: {
+      async start({ onEvent }) {
+        onEvent({ type: "text_delta", text: "流" });
+        onEvent({ type: "text_delta", text: "式" });
+        return { status: "completed", message: "流式" };
+      },
+    },
+    async executeTool() { return { ok: true }; },
+    async requestApproval() { return true; },
+    onEvent(event) { events.push(event); },
+  });
+
+  await runner.run("test");
+
+  assert.deepEqual(
+    events.filter((event) => event.type === "assistant_delta").map((event) => event.text),
+    ["流", "式"],
+  );
+});

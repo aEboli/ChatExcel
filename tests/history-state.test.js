@@ -28,3 +28,16 @@ test("选择最新操作不会进入历史锁", () => {
   assert.equal(history.isHistorical, false);
   assert.equal(history.cursor, null);
 });
+
+test("一次任务把多个步骤归入同一个操作组", () => {
+  const history = new HistoryState();
+  const operation = history.startOperation({ label: "整理数据" });
+  const first = history.addActivity({ callId: "call-1", label: "读取" });
+  const second = history.addActivity({ callId: "call-2", label: "写入" });
+  history.finishOperation("success");
+
+  assert.equal(history.operations.length, 1);
+  assert.deepEqual(operation.stepIndexes, [first.index, second.index]);
+  assert.equal(history.getOperation(first.operationId).status, "success");
+  assert.equal(second.operationId, first.operationId);
+});

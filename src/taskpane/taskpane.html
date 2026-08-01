@@ -124,15 +124,37 @@
                   </button>
                 </div>
               </div>
-              <button class="icon-button compact stop-button" id="stop-button" type="button" title="停止" aria-label="停止" hidden>
-                <img src="/assets/fluent/stop.svg" alt="" />
-              </button>
               <button class="icon-button compact send-button" id="send-button" type="button" title="发送" aria-label="发送">
-                <img src="/assets/fluent/arrow-up.svg" alt="" />
+                <img class="send-icon send-arrow" src="/assets/fluent/arrow-up.svg" alt="" />
+                <span class="send-spinner" aria-hidden="true"></span>
+                <img class="send-icon send-stop" src="/assets/fluent/stop.svg" alt="" />
               </button>
             </div>
           </div>
           <div class="run-status" id="run-status" aria-live="polite"></div>
+        </div>
+      </footer>
+
+      <footer class="easter-footer" id="easter-footer">
+        <button
+          class="easter-trigger"
+          id="easter-trigger"
+          type="button"
+          title="打开 ChatEx 彩蛋"
+          aria-label="打开 ChatEx 页脚彩蛋"
+          aria-pressed="false"
+        >
+          <span class="easter-brand" aria-hidden="true">ChatEx</span>
+          <span class="easter-caption">local craft</span>
+          <span class="easter-spark" aria-hidden="true"></span>
+        </button>
+        <div class="easter-stage" aria-hidden="true">
+          <span class="easter-floor"></span>
+          <span class="easter-object easter-card">C</span>
+          <span class="easter-object easter-orb"></span>
+          <span class="easter-walker walker-one"></span>
+          <span class="easter-walker walker-two"></span>
+          <span class="easter-walker walker-three"></span>
         </div>
       </footer>
 

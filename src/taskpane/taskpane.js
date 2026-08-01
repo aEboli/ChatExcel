@@ -44,12 +44,13 @@ const elements = {
   contextLabel: document.querySelector("#context-label"),
   imageInput: document.querySelector("#image-input"),
   imageButton: document.querySelector("#image-button"),
+  easterFooter: document.querySelector("#easter-footer"),
+  easterTrigger: document.querySelector("#easter-trigger"),
   modeButton: document.querySelector("#mode-button"),
   modeIcon: document.querySelector("#mode-icon"),
   modeLabel: document.querySelector("#mode-label"),
   modeMenu: document.querySelector("#mode-menu"),
   runStatus: document.querySelector("#run-status"),
-  stopButton: document.querySelector("#stop-button"),
   sendButton: document.querySelector("#send-button"),
   settingsView: document.querySelector("#settings-view"),
   settingsBackButton: document.querySelector("#settings-back-button"),
@@ -80,6 +81,7 @@ const elements = {
 
 const history = new HistoryState();
 const activityRows = new Map();
+const activityGroups = new Map();
 const registeredWorksheetIds = new Set();
 const settingsBackground = [...document.querySelectorAll(".app-shell > :not(#settings-view):not(#confirm-modal)")];
 let attachments = [];
@@ -96,6 +98,10 @@ let workbookCollectionEventsRegistered = false;
 let workbookLabelTimer = null;
 let manualChangePromptActive = false;
 let suppressWorkbookChangesUntil = 0;
+let streamingAssistantId = null;
+let currentOperationId = null;
+let currentRunOutcome = "success";
+let uiBusy = false;
 
 class ApiError extends Error {
   constructor(code, message, status) {
@@ -131,24 +137,129 @@ async function requestJson(path, { method = "GET", body, signal } = {}) {
   return payload;
 }
 
+async function requestStream(path, { method = "POST", body, signal, onEvent } = {}) {
+  const response = await fetch(path, {
+    method,
+    headers: {
+      Accept: "text/event-stream",
+      ...(body === undefined ? {} : { "Content-Type": "application/json" }),
+    },
+    body: body === undefined ? undefined : JSON.stringify(body),
+    signal,
+  });
+  const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
+  if (!contentType.includes("text/event-stream")) {
+    let payload;
+    try {
+      payload = await response.json();
+    } catch {
+      throw new ApiError("API_RESPONSE_INVALID", "本地服务返回了无效响应。", response.status);
+    }
+    if (!response.ok || payload.ok === false) {
+      throw new ApiError(
+        payload.error?.code ?? "API_ERROR",
+        payload.error?.message ?? "本地服务请求失败。",
+        response.status,
+      );
+    }
+    return payload;
+  }
+
+  if (!response.ok || !response.body?.getReader) {
+    throw new ApiError("API_STREAM_UNAVAILABLE", "本地服务无法建立事件流。", response.status);
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let eventName = "message";
+  let dataLines = [];
+  let result = null;
+
+  const handleFrame = () => {
+    if (dataLines.length === 0) {
+      eventName = "message";
+      return;
+    }
+    const raw = dataLines.join("\n");
+    dataLines = [];
+    const currentEvent = eventName;
+    eventName = "message";
+    let payload;
+    try {
+      payload = JSON.parse(raw);
+    } catch {
+      throw new ApiError("API_STREAM_INVALID", "本地服务返回了无效事件。", response.status);
+    }
+    if (currentEvent === "delta") {
+      onEvent?.(payload);
+    } else if (currentEvent === "result") {
+      result = payload;
+    } else if (currentEvent === "error") {
+      throw new ApiError(
+        payload.error?.code ?? "API_ERROR",
+        payload.error?.message ?? "本地服务请求失败。",
+        response.status,
+      );
+    }
+  };
+
+  try {
+    while (true) {
+      signal?.throwIfAborted?.();
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      for (const line of lines) {
+        const normalized = line.replace(/\r$/, "");
+        if (normalized === "") {
+          handleFrame();
+        } else if (normalized.startsWith("event:")) {
+          eventName = normalized.slice(6).trim() || "message";
+        } else if (normalized.startsWith("data:")) {
+          dataLines.push(normalized.slice(5).replace(/^ /, ""));
+        }
+      }
+    }
+    buffer += decoder.decode();
+    if (buffer !== "") {
+      const normalized = buffer.replace(/\r$/, "");
+      if (normalized.startsWith("data:")) dataLines.push(normalized.slice(5).replace(/^ /, ""));
+    }
+    handleFrame();
+  } finally {
+    reader.releaseLock?.();
+  }
+
+  if (result === null) {
+    throw new ApiError("API_STREAM_INCOMPLETE", "本地服务事件流未返回最终结果。", response.status);
+  }
+  return result;
+}
+
 const api = {
-  start: ({ sessionId, message, attachments: images, model, reasoningEffort, signal }) =>
-    requestJson("/api/sessions", {
+  start: ({ sessionId, message, attachments: images, model, reasoningEffort, signal, onEvent }) =>
+    requestStream("/api/sessions", {
       method: "POST",
       body: { sessionId, message, attachments: images, model, reasoningEffort },
       signal,
+      onEvent,
     }),
-  addMessage: ({ sessionId, message, attachments: images, model, reasoningEffort, signal }) =>
-    requestJson(`/api/sessions/${encodeURIComponent(sessionId)}/messages`, {
+  addMessage: ({ sessionId, message, attachments: images, model, reasoningEffort, signal, onEvent }) =>
+    requestStream(`/api/sessions/${encodeURIComponent(sessionId)}/messages`, {
       method: "POST",
       body: { message, attachments: images, model, reasoningEffort },
       signal,
+      onEvent,
     }),
-  submitToolResults: ({ sessionId, results, signal }) =>
-    requestJson(`/api/sessions/${encodeURIComponent(sessionId)}/tool-results`, {
+  submitToolResults: ({ sessionId, results, signal, onEvent }) =>
+    requestStream(`/api/sessions/${encodeURIComponent(sessionId)}/tool-results`, {
       method: "POST",
       body: { results },
       signal,
+      onEvent,
     }),
   cancel: ({ sessionId }) =>
     requestJson(`/api/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" }),
@@ -234,6 +345,28 @@ function appendMessage(role, text, messageAttachments = []) {
   renderConversation();
 }
 
+function appendAssistantDelta(text) {
+  if (typeof text !== "string" || text === "") return;
+  if (!streamingAssistantId) {
+    const message = history.addMessage("assistant", "", { timelineIndex: history.latestIndex });
+    streamingAssistantId = message.id;
+  }
+  const message = history.updateMessage(streamingAssistantId, {
+    text: `${history.messages.find((entry) => entry.id === streamingAssistantId)?.text ?? ""}${text}`,
+  });
+  if (message) renderConversation();
+}
+
+function finishAssistantMessage(text) {
+  if (streamingAssistantId) {
+    history.updateMessage(streamingAssistantId, { text: text || "模型未返回文本。" });
+    streamingAssistantId = null;
+    renderConversation();
+    return;
+  }
+  appendMessage("assistant", text);
+}
+
 function renderConversation() {
   const visibleMessages = history.visibleMessages();
   const fragment = document.createDocumentFragment();
@@ -249,6 +382,7 @@ function renderConversation() {
     for (const entry of visibleMessages) {
       const message = document.createElement("div");
       message.className = `message ${entry.role}`;
+      if (entry.id === streamingAssistantId) message.classList.add("is-streaming");
       if (entry.attachments.length > 0) {
         const images = document.createElement("div");
         images.className = "message-images";
@@ -270,6 +404,90 @@ function renderConversation() {
   elements.conversation.scrollTop = elements.conversation.scrollHeight;
 }
 
+function truncateText(value, maxLength = 56) {
+  const text = String(value ?? "").trim();
+  return text.length > maxLength ? `${text.slice(0, maxLength - 1)}…` : text;
+}
+
+function operationStatusText(status) {
+  if (status === "running") return "进行中";
+  if (status === "error") return "失败";
+  if (status === "stopped") return "已停止";
+  return "完成";
+}
+
+function renderActivityGroup(operationId) {
+  const group = activityGroups.get(operationId);
+  const operation = history.getOperation(operationId);
+  if (!group || !operation) return;
+  const entries = operation.stepIndexes
+    .map((index) => history.activities[index])
+    .filter(Boolean);
+  const hasRunning = entries.some((entry) => entry.status === "pending" || entry.status === "running");
+  const hasError = entries.some((entry) => entry.status === "error" || entry.status === "denied");
+  const status = operation.status !== "running"
+    ? operation.status
+    : hasRunning || entries.length === 0 ? "running" : hasError ? "error" : "success";
+  group.dataset.status = status;
+  group.querySelector(".activity-group-title").textContent = truncateText(operation.label || "本次操作");
+  group.querySelector(".activity-group-preview").textContent = entries.length > 0
+    ? entries.map((entry) => entry.label).join(" · ")
+    : "等待步骤";
+  group.querySelector(".activity-group-count").textContent = `${entries.length} 步`;
+  group.querySelector(".activity-group-state").textContent = operationStatusText(status);
+  group.querySelector(".activity-group-steps").hidden = operation.collapsed !== false;
+  group.querySelector(".activity-group-header").setAttribute("aria-expanded", String(operation.collapsed === false));
+  group.classList.toggle("is-collapsed", operation.collapsed !== false);
+  elements.activityCount.textContent = String(history.operations.length);
+}
+
+function ensureActivityGroup(operationId) {
+  let group = activityGroups.get(operationId);
+  if (group) return group;
+  const operation = history.getOperation(operationId);
+  if (!operation) return null;
+  operation.collapsed = true;
+  group = document.createElement("section");
+  group.className = "activity-group";
+  group.dataset.operationId = operation.id;
+
+  const header = document.createElement("button");
+  header.type = "button";
+  header.className = "activity-group-header";
+  header.title = "展开或折叠本次任务的全部步骤";
+  const indicator = document.createElement("span");
+  indicator.className = "activity-indicator";
+  const copy = document.createElement("span");
+  copy.className = "activity-group-copy";
+  const title = document.createElement("strong");
+  title.className = "activity-group-title";
+  const preview = document.createElement("span");
+  preview.className = "activity-group-preview";
+  copy.append(title, preview);
+  const meta = document.createElement("span");
+  meta.className = "activity-group-meta";
+  const count = document.createElement("span");
+  count.className = "activity-group-count";
+  const state = document.createElement("span");
+  state.className = "activity-group-state";
+  const chevron = createIcon("/assets/fluent/chevron-down.svg");
+  chevron.className = "activity-group-chevron";
+  meta.append(count, state, chevron);
+  header.append(indicator, copy, meta);
+
+  const steps = document.createElement("div");
+  steps.className = "activity-group-steps";
+  header.addEventListener("click", () => {
+    operation.collapsed = operation.collapsed === false;
+    renderActivityGroup(operation.id);
+  });
+  group.append(header, steps);
+  elements.activityList.append(group);
+  activityGroups.set(operation.id, group);
+  renderActivityGroup(operation.id);
+  return group;
+}
+
 function ensureActivityRow(event) {
   let row = activityRows.get(event.call.callId);
   if (row) return row;
@@ -282,12 +500,13 @@ function ensureActivityRow(event) {
     status: "pending",
     state: "等待",
   });
+  const group = ensureActivityGroup(entry.operationId);
   row = document.createElement("button");
   row.type = "button";
   row.className = "activity-row";
   row.dataset.status = "pending";
   row.dataset.index = String(entry.index);
-  row.title = "查看此操作对应的历史上下文";
+  row.title = "查看此步骤对应的历史上下文";
 
   const indicator = document.createElement("span");
   indicator.className = "activity-indicator";
@@ -318,16 +537,17 @@ function ensureActivityRow(event) {
   });
 
   elements.activityEmpty.hidden = true;
-  elements.activityList.append(row);
-  elements.activityCount.textContent = String(history.activities.length);
+  group?.querySelector(".activity-group-steps")?.append(row);
+  elements.activityCount.textContent = String(history.operations.length);
   activityRows.set(entry.callId, row);
+  renderActivityGroup(entry.operationId);
   renderHistoricalState();
   return row;
 }
 
 function updateActivity(event, status, stateText, resultText = null) {
   const row = ensureActivityRow(event);
-  history.updateActivity(event.call.callId, {
+  const entry = history.updateActivity(event.call.callId, {
     status,
     state: stateText,
     ...(resultText ? { result: resultText } : {}),
@@ -340,6 +560,7 @@ function updateActivity(event, status, stateText, resultText = null) {
     result.title = resultText;
     result.hidden = false;
   }
+  renderActivityGroup(entry?.operationId);
   if (!history.isHistorical) {
     elements.activityList.scrollTop = elements.activityList.scrollHeight;
   }
@@ -350,6 +571,8 @@ function renderHistoricalState() {
   for (const entry of history.activities) {
     activityRows.get(entry.callId)?.classList.toggle("is-selected", entry.index === selected);
   }
+  for (const operation of history.operations) renderActivityGroup(operation.id);
+  elements.activityEmpty.hidden = history.operations.length > 0;
   elements.historyBanner.hidden = !history.isHistorical;
   if (history.isHistorical) {
     elements.historyLabel.textContent = `历史上下文 #${history.selectedIndex + 1} · 不会回滚工作簿`;
@@ -636,7 +859,12 @@ function setApprovalMode(mode) {
 
 function updateSendState() {
   const hasContent = elements.promptInput.value.trim() !== "" || attachments.length > 0;
-  elements.sendButton.disabled = runner.running || !configState || !hasContent;
+  const busy = uiBusy;
+  elements.sendButton.disabled = busy ? false : !configState || !hasContent;
+  elements.sendButton.classList.toggle("is-busy", busy);
+  elements.sendButton.setAttribute("aria-busy", String(busy));
+  elements.sendButton.title = busy ? "停止当前任务" : "发送";
+  elements.sendButton.setAttribute("aria-label", busy ? "停止当前任务" : "发送");
 }
 
 function resizePromptInput() {
@@ -645,13 +873,13 @@ function resizePromptInput() {
 }
 
 function setBusy(busy) {
+  uiBusy = busy;
   elements.promptInput.disabled = busy;
   elements.modelButton.disabled = busy || !configState;
   elements.effortButton.disabled = busy || availableReasoningEfforts().length === 0;
   elements.imageButton.disabled = busy;
   elements.modeButton.disabled = busy;
   elements.settingsButton.disabled = busy;
-  elements.stopButton.hidden = !busy;
   for (const row of activityRows.values()) row.disabled = busy;
   if (!busy) elements.runStatus.textContent = "";
   updateSendState();
@@ -710,9 +938,17 @@ async function safeExecuteTool(name, args) {
 function handleRunnerEvent(event) {
   switch (event.type) {
     case "run_started":
+      currentOperationId = history.startOperation({ label: event.message || "分析图片" }).id;
+      currentRunOutcome = "success";
+      streamingAssistantId = null;
+      ensureActivityGroup(currentOperationId);
+      elements.activityEmpty.hidden = true;
       appendMessage("user", event.message || "分析图片", event.attachments);
-      elements.runStatus.textContent = "模型处理中";
+      elements.runStatus.textContent = "";
       setBusy(true);
+      break;
+    case "assistant_delta":
+      appendAssistantDelta(event.text);
       break;
     case "context_updated":
       currentContext = event.context;
@@ -729,11 +965,11 @@ function handleRunnerEvent(event) {
       break;
     case "tool_running":
       updateActivity(event, "running", "执行中");
-      elements.runStatus.textContent = event.tool.mode === "modify" ? "正在修改" : "正在读取";
+      elements.runStatus.textContent = "";
       break;
     case "tool_denied":
       updateActivity(event, "denied", "已拒绝", summarizeToolOutput(event.output));
-      elements.runStatus.textContent = "模型处理中";
+      elements.runStatus.textContent = "";
       break;
     case "tool_completed":
       updateActivity(
@@ -742,18 +978,27 @@ function handleRunnerEvent(event) {
         event.output?.ok === false ? "失败" : "完成",
         summarizeToolOutput(event.output),
       );
-      elements.runStatus.textContent = "模型处理中";
+      elements.runStatus.textContent = "";
       break;
     case "assistant_message":
-      appendMessage("assistant", event.message);
+      finishAssistantMessage(event.message);
       break;
     case "run_error":
+      currentRunOutcome = "error";
+      streamingAssistantId = null;
+      renderConversation();
       appendMessage("error", event.error instanceof Error ? event.error.message : "任务失败。" );
       break;
     case "run_stopped":
+      currentRunOutcome = "stopped";
+      streamingAssistantId = null;
+      renderConversation();
       appendMessage("error", "任务已停止。" );
       break;
     case "run_finished":
+      history.finishOperation(currentRunOutcome);
+      currentOperationId = null;
+      renderHistoricalState();
       elements.approval.hidden = true;
       setBusy(false);
       elements.promptInput.focus();
@@ -1053,6 +1298,7 @@ function seedPreviewState() {
   history.addMessage("user", "整理 Sheet1 的验收数据，并汇报实际表格名与图表名。", {
     timelineIndex: -1,
   });
+  history.startOperation({ label: "整理 Sheet1 的验收数据" });
   const samples = [
     {
       call: { callId: "preview-read" },
@@ -1076,6 +1322,7 @@ function seedPreviewState() {
   for (const sample of samples) {
     updateActivity(sample, "success", "完成", summarizeToolOutput(sample.output));
   }
+  history.finishOperation("success");
   history.addMessage(
     "assistant",
     "已整理 Sheet1!A1:D5，并创建表格 AcceptanceTable 与图表 Chart 1。",
@@ -1174,10 +1421,17 @@ elements.promptInput.addEventListener("keydown", (event) => {
     void submitPrompt();
   }
 });
-elements.sendButton.addEventListener("click", () => void submitPrompt());
-elements.stopButton.addEventListener("click", () => void runner.stop());
+elements.sendButton.addEventListener("click", () => {
+  if (runner.running) void runner.stop();
+  else void submitPrompt();
+});
 elements.imageButton.addEventListener("click", () => elements.imageInput.click());
 elements.imageInput.addEventListener("change", () => void addSelectedImages(elements.imageInput.files));
+elements.easterTrigger.addEventListener("click", () => {
+  const active = elements.easterFooter.classList.toggle("is-active");
+  elements.easterTrigger.setAttribute("aria-pressed", String(active));
+  elements.easterTrigger.title = active ? "收起 ChatEx 彩蛋" : "打开 ChatEx 彩蛋";
+});
 elements.modelButton.addEventListener("click", () => toggleMenu(elements.modelMenu, elements.modelButton));
 elements.effortButton.addEventListener("click", () => toggleMenu(elements.effortMenu, elements.effortButton));
 elements.modeButton.addEventListener("click", () => toggleMenu(elements.modeMenu, elements.modeButton));
@@ -1222,10 +1476,10 @@ resizePromptInput();
 renderConversation();
 updateSendState();
 
-if (globalThis.Office?.onReady) {
-  Office.onReady((info) => void initializeExcel(info));
-} else if (previewMode) {
+if (previewMode) {
   void initializePreview();
+} else if (globalThis.Office?.onReady) {
+  Office.onReady((info) => void initializeExcel(info));
 } else {
   elements.statusDot.className = "status-dot is-error";
   setWorkbookIdentity("Office.js 未加载");

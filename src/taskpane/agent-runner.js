@@ -51,6 +51,13 @@ export class AgentRunner {
     this.running = true;
     this.controller = new AbortController();
     const signal = this.controller.signal;
+    const streamEvent = (event) => {
+      if (event?.type === "text_delta" && typeof event.text === "string") {
+        this.onEvent({ type: "assistant_delta", text: event.text });
+        return;
+      }
+      this.onEvent(event);
+    };
     const isNewSession = this.sessionId === null;
     if (isNewSession) {
       this.sessionId = makeSessionId();
@@ -59,8 +66,8 @@ export class AgentRunner {
 
     try {
       let response = isNewSession
-        ? await this.api.start({ sessionId: this.sessionId, message, signal, ...options })
-        : await this.api.addMessage({ sessionId: this.sessionId, message, signal, ...options });
+        ? await this.api.start({ sessionId: this.sessionId, message, signal, ...options, onEvent: streamEvent })
+        : await this.api.addMessage({ sessionId: this.sessionId, message, signal, ...options, onEvent: streamEvent });
 
       if (response.context) {
         this.onEvent({ type: "context_updated", context: response.context });
@@ -118,6 +125,7 @@ export class AgentRunner {
           sessionId: this.sessionId,
           results,
           signal,
+          onEvent: streamEvent,
         });
         if (response.context) {
           this.onEvent({ type: "context_updated", context: response.context });

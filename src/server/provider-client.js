@@ -5,6 +5,7 @@ import {
   parseDataUrl,
   protocolAuthHeaders,
 } from "./protocols.js";
+import { readProviderResponse, streamingEndpoint } from "./provider-stream.js";
 import { getResponsesToolDefinitions } from "../shared/excel-tools.js";
 
 export const AGENT_INSTRUCTIONS = `你是当前 Microsoft Excel 工作簿内的操作 Agent。
@@ -470,7 +471,7 @@ function runtimeMetadata(config) {
   };
 }
 
-function requestBodyFor(protocol, config, input, toolDefinitions) {
+function requestBodyFor(protocol, config, input, toolDefinitions, { stream = false } = {}) {
   if (protocol === "openai-responses") {
     const body = {
       model: config.model,
@@ -481,6 +482,7 @@ function requestBodyFor(protocol, config, input, toolDefinitions) {
       store: false,
       parallel_tool_calls: false,
     };
+    if (stream) body.stream = true;
     if (config.reasoningEffort && config.reasoningEffort !== "none") {
       body.reasoning = { effort: config.reasoningEffort, summary: "auto" };
     }
@@ -494,6 +496,10 @@ function requestBodyFor(protocol, config, input, toolDefinitions) {
       tools: chatTools(toolDefinitions),
       parallel_tool_calls: false,
     };
+    if (stream) {
+      body.stream = true;
+      body.stream_options = { include_usage: true };
+    }
     if (config.reasoningEffort && config.reasoningEffort !== "none") body.reasoning_effort = config.reasoningEffort;
     return body;
   }
@@ -505,6 +511,7 @@ function requestBodyFor(protocol, config, input, toolDefinitions) {
       tools: anthropicTools(toolDefinitions),
       max_tokens: Math.min(DEFAULT_ANTHROPIC_MAX_TOKENS, Math.max(1_024, Math.floor((config.contextWindow ?? 32_000) / 4))),
     };
+    if (stream) body.stream = true;
     const thinking = buildAnthropicThinking(config, body.max_tokens);
     if (thinking) body.thinking = thinking;
     return body;
@@ -539,7 +546,7 @@ export function createProviderClient({
 } = {}) {
   if (typeof fetchImpl !== "function") throw new TypeError("fetchImpl 必须是函数。" );
   return {
-    async create({ input, signal, options } = {}) {
+    async create({ input, signal, options, onEvent } = {}) {
       if (!Array.isArray(input)) throw new TypeError("Provider input 必须是数组。" );
       const config = await configLoader(options);
       const protocol = resolveProtocol(config);
@@ -547,19 +554,23 @@ export function createProviderClient({
       if (typeof endpoint !== "string" || endpoint === "") {
         throw new ProviderError("PROVIDER_ENDPOINT_MISSING", "当前协议缺少生成接口地址。", { statusCode: 500 });
       }
+      const streaming = typeof onEvent === "function";
+      const requestEndpoint = streaming ? streamingEndpoint(protocol, endpoint) : endpoint;
       const abort = combineAbortSignal(signal, timeoutMs);
       let response;
       try {
-        response = await fetchImpl(endpoint, {
+        response = await fetchImpl(requestEndpoint, {
           method: "POST",
           headers: {
             ...protocolAuthHeaders(protocol, config.token),
             "Content-Type": "application/json",
+            ...(streaming ? { Accept: "text/event-stream" } : {}),
           },
-          body: JSON.stringify(requestBodyFor(protocol, config, input, toolDefinitions)),
+          body: JSON.stringify(requestBodyFor(protocol, config, input, toolDefinitions, { stream: streaming })),
           signal: abort.signal,
         });
       } catch (error) {
+        abort.cleanup();
         if (signal?.aborted) {
           throw new ProviderError("AGENT_CANCELLED", "当前 Agent 请求已停止。", { statusCode: 499 });
         }
@@ -567,13 +578,12 @@ export function createProviderClient({
           throw new ProviderError("PROVIDER_TIMEOUT", "模型提供方响应超时。", { statusCode: 504 });
         }
         throw new ProviderError("PROVIDER_UNAVAILABLE", "无法连接当前模型提供方。", { statusCode: 502 });
-      } finally {
-        abort.cleanup();
       }
 
       const requestId = response.headers.get("x-request-id");
       if (!response.ok) {
         const summary = sanitizeSummary(await response.text(), config.token);
+        abort.cleanup();
         throw new ProviderError(
           "PROVIDER_HTTP_ERROR",
           summary ? `模型提供方返回 HTTP ${response.status}：${summary}` : `模型提供方返回 HTTP ${response.status}。`,
@@ -582,10 +592,33 @@ export function createProviderClient({
       }
       let payload;
       try {
-        payload = await response.json();
+        payload = await readProviderResponse(response, {
+          protocol,
+          onEvent,
+          signal: abort.signal,
+        });
       } catch (error) {
-        throw new ProviderError("PROVIDER_RESPONSE_INVALID", "模型提供方返回了无效 JSON。", { statusCode: 502, requestId });
+        if (signal?.aborted) {
+          abort.cleanup();
+          throw new ProviderError("AGENT_CANCELLED", "当前 Agent 请求已停止。", { statusCode: 499 });
+        }
+        if (abort.didTimeOut()) {
+          abort.cleanup();
+          throw new ProviderError("PROVIDER_TIMEOUT", "模型提供方响应超时。", { statusCode: 504 });
+        }
+        const code = error?.code === "PROVIDER_STREAM_ERROR"
+          ? "PROVIDER_STREAM_ERROR"
+          : "PROVIDER_RESPONSE_INVALID";
+        abort.cleanup();
+        throw new ProviderError(
+          code,
+          code === "PROVIDER_STREAM_ERROR"
+            ? sanitizeSummary(error instanceof Error ? error.message : "模型提供方返回了流式错误。", config.token)
+            : "模型提供方返回了无效 JSON。",
+          { statusCode: 502, requestId },
+        );
       }
+      abort.cleanup();
       let normalized;
       try {
         normalized = normalizeProviderResponse(protocol, payload);

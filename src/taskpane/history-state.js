@@ -1,8 +1,10 @@
 export class HistoryState {
   constructor() {
     this.activities = [];
+    this.operations = [];
     this.messages = [];
     this.cursor = null;
+    this.activeOperationId = null;
   }
 
   get latestIndex() {
@@ -17,11 +19,52 @@ export class HistoryState {
     return this.cursor !== null && this.cursor < this.latestIndex;
   }
 
+  startOperation({ label = "本次操作" } = {}) {
+    const operation = {
+      id: globalThis.crypto?.randomUUID?.() ?? `operation_${this.operations.length + 1}`,
+      label: String(label || "本次操作"),
+      status: "running",
+      stepIndexes: [],
+    };
+    this.operations.push(operation);
+    this.activeOperationId = operation.id;
+    return operation;
+  }
+
+  getOperation(operationId) {
+    return this.operations.find((operation) => operation.id === operationId) ?? null;
+  }
+
+  updateOperation(operationId, patch) {
+    const operation = this.getOperation(operationId);
+    if (!operation) return null;
+    Object.assign(operation, patch);
+    return operation;
+  }
+
+  finishOperation(status = "success") {
+    if (!this.activeOperationId) return null;
+    const operation = this.updateOperation(this.activeOperationId, { status });
+    this.activeOperationId = null;
+    return operation;
+  }
+
   addActivity(activity) {
     const index = this.activities.length;
-    const entry = { ...activity, index };
+    let operationId = activity.operationId ?? this.activeOperationId;
+    if (!operationId) operationId = this.startOperation().id;
+    const operation = this.getOperation(operationId);
+    const entry = { ...activity, operationId, index };
     this.activities.push(entry);
+    operation?.stepIndexes.push(index);
     return entry;
+  }
+
+  updateMessage(messageId, patch) {
+    const message = this.messages.find((entry) => entry.id === messageId);
+    if (!message) return null;
+    Object.assign(message, patch);
+    return message;
   }
 
   updateActivity(callId, patch) {

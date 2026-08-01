@@ -1,6 +1,6 @@
 {
   "name": "chatexcel",
-  "version": "0.1.0",
+  "version": "0.0.1",
   "private": true,
   "description": "复用系统 Codex 配置或自定义模型接口的 ChatExcel 加载项",
   "type": "module",
@@ -10,6 +10,7 @@
   "scripts": {
     "icons": "node scripts/generate-icons.mjs",
     "check": "node scripts/check-js.mjs",
+    "check:launcher": "dotnet build launcher/ChatExcelLauncher.csproj --configuration Release",
     "test": "node --test",
     "start": "node src/server/index.js",
     "dev": "node --watch src/server/index.js",
@@ -21,6 +22,9 @@
     "validate:manifest": "office-addin-manifest validate manifest.xml",
     "verify:provider": "node scripts/verify-provider.mjs",
     "sideload": "node scripts/sideload.mjs",
+    "build:launcher": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-launcher.ps1",
+    "package:release": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-release.ps1",
+    "diagnose:launcher": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/diagnose-launcher.ps1",
     "unregister": "office-addin-dev-settings unregister manifest.xml",
     "verify": "npm run check && npm test && npm run validate:manifest"
   },

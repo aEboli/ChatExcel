@@ -269,7 +269,7 @@ export class SessionManager {
     this.sweepTimer.unref?.();
   }
 
-  async start(message, requestedId, options = {}) {
+  async start(message, requestedId, options = {}, hooks = {}) {
     const sessionId = validateRequestedId(requestedId);
     if (this.sessions.has(sessionId)) {
       throw new AgentSessionError("SESSION_EXISTS", "该会话 ID 已存在。", 409);
@@ -284,6 +284,7 @@ export class SessionManager {
       state: "idle",
       pendingCalls: null,
       abortController: null,
+      streamSink: typeof hooks.onEvent === "function" ? hooks.onEvent : null,
       lastTouched: this.now(),
     };
     this.sessions.set(sessionId, session);
@@ -296,13 +297,14 @@ export class SessionManager {
     }
   }
 
-  async addMessage(sessionId, message, options = {}) {
+  async addMessage(sessionId, message, options = {}, hooks = {}) {
     const session = this.#getSession(sessionId);
     if (session.state !== "idle" || session.pendingCalls) {
       throw new AgentSessionError("SESSION_BUSY", "当前会话仍在处理上一项操作。", 409);
     }
     const payload = validateUserPayload(message, options.attachments);
     session.requestOptions = validateRequestOptions(options, session.requestOptions);
+    session.streamSink = typeof hooks.onEvent === "function" ? hooks.onEvent : null;
     session.input.push(userInput(payload.message, payload.attachments));
     session.lastTouched = this.now();
 
@@ -314,7 +316,7 @@ export class SessionManager {
     }
   }
 
-  async submitToolResults(sessionId, results) {
+  async submitToolResults(sessionId, results, hooks = {}) {
     const session = this.#getSession(sessionId);
     if (session.state !== "waiting_for_tools" || !session.pendingCalls) {
       throw new AgentSessionError("TOOL_RESULTS_UNEXPECTED", "当前会话没有等待工具结果。", 409);
@@ -358,6 +360,7 @@ export class SessionManager {
     session.input.push(...outputItems);
     session.pendingCalls = null;
     session.state = "idle";
+    session.streamSink = typeof hooks.onEvent === "function" ? hooks.onEvent : null;
     session.lastTouched = this.now();
 
     try {
@@ -426,9 +429,11 @@ export class SessionManager {
         input: session.input,
         signal: session.abortController.signal,
         options: session.requestOptions,
+        onEvent: session.streamSink,
       });
     } finally {
       session.abortController = null;
+      session.streamSink = null;
     }
 
     session.stepCount += 1;
