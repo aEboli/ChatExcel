@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <title>ChatExcel</title>
+    <link rel="stylesheet" href="/taskpane.css" />
+  </head>
+  <body>
+    <div class="app-shell" id="app-shell">
+      <header class="topbar glass-surface">
+        <img class="brand-icon" src="/assets/icon-32.png" alt="" width="32" height="32" />
+        <div class="brand-copy">
+          <h1>ChatExcel</h1>
+          <div class="workbook-status" id="workbook-status" title="正在连接当前工作簿">
+            <span class="status-dot is-loading" id="status-dot"></span>
+            <span class="workbook-label" id="workbook-label">正在连接</span>
+          </div>
+        </div>
+        <button class="icon-button" id="settings-button" type="button" title="设置" aria-label="打开设置">
+          <img src="/assets/fluent/settings.svg" alt="" />
+        </button>
+      </header>
+
+      <section class="activity glass-surface" id="activity" aria-labelledby="activity-title">
+        <button class="section-heading" id="activity-toggle" type="button" aria-expanded="true">
+          <span class="section-title-wrap">
+            <img src="/assets/fluent/history.svg" alt="" />
+            <span id="activity-title">操作记录</span>
+          </span>
+          <span class="section-meta">
+            <span id="activity-count">0</span>
+            <img class="section-chevron" src="/assets/fluent/chevron-down.svg" alt="" />
+          </span>
+        </button>
+        <div class="history-banner" id="history-banner" hidden>
+          <span id="history-label"></span>
+          <button class="text-button" id="history-latest-button" type="button">回到最新</button>
+        </div>
+        <div class="activity-list" id="activity-list">
+          <div class="activity-empty" id="activity-empty">暂无操作</div>
+        </div>
+      </section>
+
+      <main class="conversation" id="conversation" aria-live="polite">
+        <div class="empty-state" id="empty-state">
+          <img src="/assets/fluent/model.svg" alt="" />
+          <strong>准备就绪</strong>
+        </div>
+      </main>
+
+      <section class="approval" id="approval" aria-labelledby="approval-title" hidden>
+        <div class="approval-heading">
+          <div>
+            <span class="approval-kicker">等待你的决定</span>
+            <h2 id="approval-title">修改工作簿</h2>
+          </div>
+          <span class="approval-target" id="approval-target"></span>
+        </div>
+        <details>
+          <summary>查看参数</summary>
+          <pre id="approval-arguments"></pre>
+        </details>
+        <div class="approval-actions">
+          <button class="button secondary" id="deny-button" type="button">取消操作</button>
+          <button class="button primary" id="approve-button" type="button">确认操作</button>
+        </div>
+      </section>
+
+      <footer class="composer-shell glass-surface">
+        <div class="attachment-error" id="attachment-error" role="alert" hidden></div>
+        <div class="attachment-list" id="attachment-list" hidden></div>
+        <div class="composer" id="composer">
+          <label class="sr-only" for="prompt-input">工作簿任务</label>
+          <textarea
+            id="prompt-input"
+            rows="1"
+            maxlength="20000"
+            placeholder="输入工作簿任务"
+          ></textarea>
+          <div class="composer-toolbar">
+            <div class="toolbar-group primary-controls">
+              <div class="menu-anchor model-anchor">
+                <button class="toolbar-button model-button" id="model-button" type="button" aria-expanded="false">
+                  <img src="/assets/fluent/model.svg" alt="" />
+                  <span id="model-label">模型</span>
+                  <img class="chevron" src="/assets/fluent/chevron-down.svg" alt="" />
+                </button>
+                <div class="control-menu model-menu" id="model-menu" role="listbox" hidden></div>
+              </div>
+              <div class="menu-anchor effort-anchor">
+                <button class="toolbar-button effort-button" id="effort-button" type="button" aria-expanded="false">
+                  <img src="/assets/fluent/brain.svg" alt="" />
+                  <span id="effort-label">思考</span>
+                  <img class="chevron" src="/assets/fluent/chevron-down.svg" alt="" />
+                </button>
+                <div class="control-menu effort-menu" id="effort-menu" role="listbox" hidden></div>
+              </div>
+              <button class="toolbar-button context-button" id="context-button" type="button" title="上下文占用" disabled>
+                <img src="/assets/fluent/context.svg" alt="" />
+                <span id="context-label">--</span>
+              </button>
+            </div>
+
+            <div class="toolbar-group action-controls">
+              <input id="image-input" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden />
+              <button class="icon-button compact" id="image-button" type="button" title="添加图片" aria-label="添加图片">
+                <img src="/assets/fluent/image-add.svg" alt="" />
+              </button>
+              <div class="menu-anchor mode-anchor">
+                <button class="mode-button is-required" id="mode-button" type="button" aria-expanded="false">
+                  <img id="mode-icon" src="/assets/fluent/approval.svg" alt="" />
+                  <span id="mode-label">需审批</span>
+                </button>
+                <div class="control-menu mode-menu" id="mode-menu" role="menu" hidden>
+                  <button class="menu-option mode-option is-required" type="button" data-mode="required">
+                    <img src="/assets/fluent/approval.svg" alt="" />
+                    <span><strong>需要审批</strong><small>每次修改由你决定</small></span>
+                  </button>
+                  <button class="menu-option mode-option is-auto" type="button" data-mode="auto">
+                    <img src="/assets/fluent/auto.svg" alt="" />
+                    <span><strong>无需审批</strong><small>告知后直接执行</small></span>
+                  </button>
+                </div>
+              </div>
+              <button class="icon-button compact stop-button" id="stop-button" type="button" title="停止" aria-label="停止" hidden>
+                <img src="/assets/fluent/stop.svg" alt="" />
+              </button>
+              <button class="icon-button compact send-button" id="send-button" type="button" title="发送" aria-label="发送">
+                <img src="/assets/fluent/arrow-up.svg" alt="" />
+              </button>
+            </div>
+          </div>
+          <div class="run-status" id="run-status" aria-live="polite"></div>
+        </div>
+      </footer>
+
+      <section class="settings-view" id="settings-view" aria-labelledby="settings-title" hidden>
+        <header class="settings-header glass-surface">
+          <button class="icon-button" id="settings-back-button" type="button" title="返回" aria-label="返回聊天">
+            <img src="/assets/fluent/back.svg" alt="" />
+          </button>
+          <div>
+            <h2 id="settings-title">配置</h2>
+            <span>ChatExcel</span>
+          </div>
+        </header>
+
+        <form class="settings-form" id="settings-form">
+          <section class="settings-section">
+            <div class="setting-row toggle-row">
+              <div>
+                <label for="use-system-config">使用系统 Codex 配置</label>
+                <p>开启时自动读取当前电脑配置</p>
+              </div>
+              <label class="switch">
+                <input id="use-system-config" type="checkbox" checked />
+                <span aria-hidden="true"></span>
+              </label>
+            </div>
+            <div class="system-summary" id="system-summary">
+              <div>
+                <strong id="system-provider">正在读取</strong>
+                <span id="system-endpoint"></span>
+              </div>
+              <button class="inline-button" id="fetch-system-models-button" type="button">获取模型</button>
+            </div>
+          </section>
+
+          <section class="settings-section custom-settings" id="custom-settings" hidden>
+            <label class="field-label" for="api-protocol">API 协议</label>
+            <select id="api-protocol" name="protocol"></select>
+            <p class="mapping-note">选择提供方协议；系统会自动补全对应的版本路径和生成接口。</p>
+
+            <label class="field-label" for="api-url">API URL</label>
+            <input id="api-url" name="apiUrl" type="url" placeholder="https://api.example.com" autocomplete="off" />
+            <p class="mapping-note">只填写主地址，系统会自动补 /v1、/v1beta 和具体接口路径。</p>
+
+            <label class="field-label" for="api-key">API Key</label>
+            <input id="api-key" name="apiKey" type="password" placeholder="保存到当前 Windows 用户的加密配置" autocomplete="off" />
+
+            <div class="field-heading">
+              <label class="field-label" for="settings-model">模型 ID</label>
+              <button class="inline-button" id="fetch-models-button" type="button">获取模型</button>
+            </div>
+            <select id="settings-model" name="model" disabled>
+              <option value="">请先获取模型</option>
+            </select>
+
+            <div class="field-grid">
+              <div>
+                <label class="field-label" for="context-window">上下文长度</label>
+                <input id="context-window" name="contextWindow" type="number" min="1024" max="2000000" step="1" value="200000" />
+              </div>
+              <div>
+                <label class="field-label" for="settings-effort">思考等级</label>
+                <select id="settings-effort" name="reasoningEffort" disabled>
+                  <option value="">请先选择模型</option>
+                </select>
+              </div>
+            </div>
+            <p class="mapping-note" id="mapping-note"></p>
+          </section>
+
+          <section class="settings-section">
+            <div class="field-heading">
+              <label class="field-label" for="max-steps">最大步骤数</label>
+              <span class="field-hint">默认 100</span>
+            </div>
+            <input id="max-steps" name="maxSteps" type="number" min="1" max="1000" step="1" value="100" />
+            <p class="mapping-note">一次 Agent 任务最多连续请求模型的次数；保存后新会话生效。</p>
+          </section>
+
+          <div class="settings-message" id="settings-message" role="status"></div>
+          <div class="settings-actions">
+            <button class="button secondary" id="settings-cancel-button" type="button">取消</button>
+            <button class="button primary" id="settings-save-button" type="submit">保存配置</button>
+          </div>
+        </form>
+      </section>
+
+      <div class="modal-backdrop" id="confirm-modal" hidden>
+        <section class="confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="confirm-title" aria-describedby="confirm-message">
+          <img class="confirm-icon" src="/assets/fluent/history.svg" alt="" />
+          <h2 id="confirm-title">确认继续</h2>
+          <p id="confirm-message"></p>
+          <div class="confirm-actions">
+            <button class="button secondary" id="confirm-cancel-button" type="button">取消</button>
+            <button class="button primary" id="confirm-accept-button" type="button">确认</button>
+          </div>
+        </section>
+      </div>
+    </div>
+
+    <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
+    <script type="module" src="/taskpane.js"></script>
+  </body>
+</html>

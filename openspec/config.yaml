@@ -1,0 +1,20 @@
+schema: spec-driven
+
+context: |
+  项目是一个仅在 Windows 本机运行的 Microsoft Excel Office.js 任务窗格加载项。
+  本地 Node.js 服务读取用户级 Codex config.toml，并通过协议适配层执行 OpenAI Responses、OpenAI Chat Completions、Anthropic Messages 或 Google Gemini generateContent 请求。
+  Excel 网页运行时不得接触模型令牌；服务仅监听回环地址并限制请求来源。
+  面向用户的界面、中文 README、安装说明和规划工件使用简体中文；默认 README 使用英文并与中文版本同步。
+  技术标识符、协议字段、配置键和环境变量保持英文。
+  使用 Node.js 24、原生 ES Modules、Office.js 和 Node 内置测试框架。
+
+rules:
+  proposal:
+    - 明确本地令牌不进入 Excel WebView 的边界
+    - 不把发布到 Microsoft Marketplace 作为本次目标
+  specs:
+    - 每项需求至少包含一个可执行或可人工复核的场景
+  design:
+    - 记录安全边界、协议适配工具循环、DPAPI 配置保护和失败关闭策略
+  tasks:
+    - 每个实现阶段都包含对应验证命令或人工验收步骤

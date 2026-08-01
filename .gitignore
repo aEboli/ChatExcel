@@ -1,0 +1,8 @@
+node_modules/
+coverage/
+*.log
+.env
+.DS_Store
+.runtime/
+work/
+assets/screenshots/reference-*.png

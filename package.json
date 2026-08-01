@@ -1,0 +1,37 @@
+{
+  "name": "chatexcel",
+  "version": "0.1.0",
+  "private": true,
+  "description": "复用系统 Codex 配置或自定义模型接口的 ChatExcel 加载项",
+  "type": "module",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "icons": "node scripts/generate-icons.mjs",
+    "check": "node scripts/check-js.mjs",
+    "test": "node --test",
+    "start": "node src/server/index.js",
+    "dev": "node --watch src/server/index.js",
+    "start:local": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start.ps1",
+    "stop:local": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/stop.ps1",
+    "certs:install": "office-addin-dev-certs install",
+    "certs:verify": "node scripts/verify-certs.mjs",
+    "certs:uninstall": "office-addin-dev-certs uninstall",
+    "validate:manifest": "office-addin-manifest validate manifest.xml",
+    "verify:provider": "node scripts/verify-provider.mjs",
+    "sideload": "node scripts/sideload.mjs",
+    "unregister": "office-addin-dev-settings unregister manifest.xml",
+    "verify": "npm run check && npm test && npm run validate:manifest"
+  },
+  "dependencies": {
+    "express": "5.2.1",
+    "smol-toml": "1.7.1"
+  },
+  "devDependencies": {
+    "@fluentui/svg-icons": "^1.1.334",
+    "office-addin-dev-certs": "2.0.10",
+    "office-addin-dev-settings": "3.1.2",
+    "office-addin-manifest": "2.1.6"
+  }
+}
