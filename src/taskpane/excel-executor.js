@@ -1,4 +1,5 @@
 import {
+  MAX_NUMBER_FORMAT_CELLS,
   MAX_READ_CELLS,
   parseAndValidateToolArguments,
   ToolValidationError,
@@ -18,6 +19,17 @@ export function assertReadableSize(rowCount, columnCount) {
     throw new ExcelToolError(
       "READ_RANGE_TOO_LARGE",
       `目标范围包含 ${cellCount} 个单元格，超过 ${MAX_READ_CELLS} 个读取限制。`,
+    );
+  }
+  return cellCount;
+}
+
+export function assertNumberFormatSize(rowCount, columnCount) {
+  const cellCount = rowCount * columnCount;
+  if (cellCount > MAX_NUMBER_FORMAT_CELLS) {
+    throw new ExcelToolError(
+      "NUMBER_FORMAT_RANGE_TOO_LARGE",
+      `目标范围包含 ${cellCount} 个单元格，超过 ${MAX_NUMBER_FORMAT_CELLS} 个数字格式限制；请缩小范围或分块执行。`,
     );
   }
   return cellCount;
@@ -171,6 +183,7 @@ async function setNumberFormat(args) {
     const worksheet = getWorksheet(context.workbook, args.worksheet);
     const range = worksheet.getRange(args.address);
     const metadata = await loadRangeMetadata(context, range, worksheet);
+    assertNumberFormatSize(metadata.rowCount, metadata.columnCount);
     range.numberFormat = Array.from({ length: metadata.rowCount }, () =>
       Array(metadata.columnCount).fill(args.formatCode),
     );

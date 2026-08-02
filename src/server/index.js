@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createApp } from "./http-app.js";
+import { ConversationRecoveryStore } from "./conversation-recovery-store.js";
 import { createResponsesClient } from "./responses-client.js";
 import { RuntimeConfigStore } from "./runtime-config.js";
 import { SessionManager } from "./session-manager.js";
@@ -23,11 +24,13 @@ async function main() {
     });
   }
   const runtimeConfigStore = new RuntimeConfigStore();
+  const recoveryStore = new ConversationRecoveryStore({ cleanupWorkerEnabled: true });
   const sessionManager = new SessionManager({
     maxStepsProvider: () => runtimeConfigStore.getMaxSteps(),
     responsesClient: createResponsesClient({
       configLoader: (options) => runtimeConfigStore.loadConfig(options),
     }),
+    recoveryStore,
   });
   const server = https.createServer(
     httpsOptions,
@@ -47,12 +50,18 @@ async function main() {
     console.log(`${APP_NAME} 已启动：${SERVICE_ORIGIN}`);
   });
 
-  const shutdown = () => {
-    sessionManager.dispose();
-    server.close(() => process.exit(0));
+  let shuttingDown = false;
+  const shutdown = async () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    const closed = new Promise((resolve, reject) => {
+      server.close((error) => (error ? reject(error) : resolve()));
+    });
+    await Promise.all([sessionManager.dispose(), closed]);
+    process.exit(0);
   };
-  process.once("SIGINT", shutdown);
-  process.once("SIGTERM", shutdown);
+  process.once("SIGINT", () => void shutdown());
+  process.once("SIGTERM", () => void shutdown());
 }
 
 main().catch((error) => {

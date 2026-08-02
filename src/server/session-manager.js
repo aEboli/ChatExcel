@@ -13,6 +13,13 @@ export const MAX_IMAGE_TOTAL_BYTES = 5_500_000;
 
 const MODEL_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$/;
 const IMAGE_DATA_URL_PATTERN = /^data:(image\/(?:png|jpeg|webp));base64,([A-Za-z0-9+/]+={0,2})$/;
+const MAX_WORKBOOK_BINDING_LENGTH = 512;
+
+const RECOVERY_PHASES = Object.freeze({
+  stable: "stable",
+  modelRequest: "model_request_in_flight",
+  toolCalls: "tool_calls_pending",
+});
 
 export class AgentSessionError extends Error {
   constructor(code, message, statusCode = 400, options = {}) {
@@ -110,6 +117,18 @@ function validateRequestOptions(options, fallback = {}) {
   };
 }
 
+function validateWorkbookBinding(value) {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "string") {
+    throw new AgentSessionError("WORKBOOK_BINDING_INVALID", "工作簿恢复标识格式无效。", 400);
+  }
+  const normalized = value.trim();
+  if (normalized === "" || normalized.length > MAX_WORKBOOK_BINDING_LENGTH) {
+    throw new AgentSessionError("WORKBOOK_BINDING_INVALID", "工作簿恢复标识格式无效。", 400);
+  }
+  return normalized;
+}
+
 function validateRequestedId(requestedId) {
   if (requestedId === undefined) {
     return randomUUID();
@@ -186,8 +205,21 @@ function protocolError(code, message, cause) {
   return new AgentSessionError(code, message, 502, cause ? { cause } : {});
 }
 
+function recoverableToolOutput(code, message, path) {
+  return {
+    ok: false,
+    error: {
+      code,
+      message,
+      path,
+      recoverable: true,
+    },
+  };
+}
+
 function parseFunctionCalls(output) {
   const calls = [];
+  const recoveryOutputs = [];
   const callIds = new Set();
 
   for (const item of output) {
@@ -200,8 +232,20 @@ function parseFunctionCalls(output) {
     if (callIds.has(item.call_id)) {
       throw protocolError("TOOL_CALL_ID_DUPLICATE", "模型返回了重复的 call_id。" );
     }
-    if (typeof item.name !== "string" || !getToolDefinition(item.name)) {
-      throw protocolError("TOOL_UNKNOWN", `模型请求了未知工具：${item.name ?? "(missing)"}`);
+    callIds.add(item.call_id);
+
+    const tool = typeof item.name === "string" ? getToolDefinition(item.name) : null;
+    if (!tool) {
+      recoveryOutputs.push({
+        type: "function_call_output",
+        call_id: item.call_id,
+        output: serializeToolOutput(recoverableToolOutput(
+          "TOOL_UNKNOWN",
+          "模型请求了未知 Excel 工具。请从已提供的工具列表中选择并重试。",
+          "$.name",
+        )),
+      });
+      continue;
     }
 
     let args;
@@ -209,13 +253,16 @@ function parseFunctionCalls(output) {
       args = parseAndValidateToolArguments(item.name, item.arguments);
     } catch (error) {
       if (error instanceof ToolValidationError) {
-        throw protocolError(error.code, error.message, error);
+        recoveryOutputs.push({
+          type: "function_call_output",
+          call_id: item.call_id,
+          output: serializeToolOutput(recoverableToolOutput(error.code, error.message, error.path)),
+        });
+        continue;
       }
       throw error;
     }
 
-    callIds.add(item.call_id);
-    const tool = getToolDefinition(item.name);
     calls.push({
       callId: item.call_id,
       name: item.name,
@@ -225,7 +272,7 @@ function parseFunctionCalls(output) {
     });
   }
 
-  return calls;
+  return { calls, recoveryOutputs };
 }
 
 function serializeToolOutput(output) {
@@ -244,11 +291,60 @@ function serializeToolOutput(output) {
   }
 }
 
+function visibleText(content, type) {
+  if (!Array.isArray(content)) return "";
+  return content
+    .filter((part) => part?.type === type && typeof part.text === "string")
+    .map((part) => part.text)
+    .join("\n")
+    .trim();
+}
+
+function visiblePresentation(input) {
+  if (!Array.isArray(input)) return { messages: [] };
+  const messages = [];
+  for (const item of input) {
+    const userText = item?.role === "user" ? visibleText(item.content, "input_text") : "";
+    if (userText !== "") {
+      messages.push({ role: "user", text: userText });
+      continue;
+    }
+    const assistantText = item?.type === "message" && item.role === "assistant"
+      ? visibleText(item.content, "output_text")
+      : "";
+    if (assistantText !== "") {
+      messages.push({ role: "assistant", text: assistantText });
+    }
+  }
+  return { messages };
+}
+
+function interruptedToolOutput(call) {
+  return recoverableToolOutput(
+    "TOOL_EXECUTION_INTERRUPTED",
+    `上一次“${call.label ?? call.name}”在任务窗格或本地服务中断时未确认完成。请重新读取工作簿，并在需要修改时重新请求审批。`,
+    "$.tool",
+  );
+}
+
+function isRecoverableProviderFailure(error) {
+  return typeof error?.code === "string"
+    && error.code.startsWith("PROVIDER_")
+    && error.code !== "PROVIDER_AUTH_INVALID";
+}
+
+function publicRecoveryTouchStatus(value) {
+  return ["touched", "expired", "unavailable"].includes(value?.status)
+    ? value.status
+    : "missing";
+}
+
 export class SessionManager {
   constructor({
     responsesClient,
     maxSteps = DEFAULT_MAX_STEPS,
     maxStepsProvider = null,
+    recoveryStore = null,
     idleTtlMs = 30 * 60 * 1_000,
     sweepIntervalMs = 60_000,
     now = () => Date.now(),
@@ -262,6 +358,18 @@ export class SessionManager {
       throw new TypeError("maxStepsProvider 必须是函数。" );
     }
     this.maxStepsProvider = maxStepsProvider;
+    if (
+      recoveryStore !== null &&
+      (
+        typeof recoveryStore.save !== "function" ||
+        typeof recoveryStore.restore !== "function" ||
+        typeof recoveryStore.clear !== "function" ||
+        typeof recoveryStore.touch !== "function"
+      )
+    ) {
+      throw new TypeError("recoveryStore 必须提供保存、恢复、心跳和清除方法。" );
+    }
+    this.recoveryStore = recoveryStore;
     this.idleTtlMs = idleTtlMs;
     this.now = now;
     this.sessions = new Map();
@@ -276,23 +384,31 @@ export class SessionManager {
     }
 
     const payload = validateUserPayload(message, options.attachments);
+    const workbookBinding = validateWorkbookBinding(options.workbookBinding);
+    const startedAt = this.now();
     const session = {
       id: sessionId,
       input: [userInput(payload.message, payload.attachments)],
       requestOptions: validateRequestOptions(options),
+      workbookBinding,
       stepCount: 0,
       state: "idle",
       pendingCalls: null,
       abortController: null,
       streamSink: typeof hooks.onEvent === "function" ? hooks.onEvent : null,
-      lastTouched: this.now(),
+      lastTouched: startedAt,
+      lastPaneHeartbeatAt: this.recoveryStore && workbookBinding ? startedAt : null,
+      recoveryPhase: RECOVERY_PHASES.stable,
+      recoveryNotice: null,
+      suspendedForRecovery: false,
+      cancelled: false,
     };
     this.sessions.set(sessionId, session);
 
     try {
       return await this.#advance(session);
     } catch (error) {
-      this.#removeSession(sessionId);
+      await this.#handleFailure(session, error);
       throw error;
     }
   }
@@ -311,89 +427,328 @@ export class SessionManager {
     try {
       return await this.#advance(session);
     } catch (error) {
-      this.#removeSession(sessionId);
+      await this.#handleFailure(session, error);
       throw error;
     }
   }
 
   async submitToolResults(sessionId, results, hooks = {}) {
     const session = this.#getSession(sessionId);
-    if (session.state !== "waiting_for_tools" || !session.pendingCalls) {
-      throw new AgentSessionError("TOOL_RESULTS_UNEXPECTED", "当前会话没有等待工具结果。", 409);
-    }
-    if (!Array.isArray(results) || results.length !== session.pendingCalls.length) {
-      throw new AgentSessionError(
-        "TOOL_RESULT_MISMATCH",
-        "工具结果数量与模型调用数量不一致。",
-        400,
-      );
-    }
-
-    const resultsByCallId = new Map();
-    for (const result of results) {
-      if (!result || typeof result !== "object" || typeof result.callId !== "string") {
-        throw new AgentSessionError("TOOL_RESULT_INVALID", "工具结果缺少 callId。", 400);
+    try {
+      if (session.state !== "waiting_for_tools" || !session.pendingCalls) {
+        throw new AgentSessionError("TOOL_RESULTS_UNEXPECTED", "当前会话没有等待工具结果。", 409);
       }
-      if (resultsByCallId.has(result.callId)) {
-        throw new AgentSessionError("TOOL_RESULT_MISMATCH", "工具结果包含重复 callId。", 400);
-      }
-      resultsByCallId.set(result.callId, result);
-    }
-
-    const outputItems = [];
-    for (const call of session.pendingCalls) {
-      const result = resultsByCallId.get(call.callId);
-      if (!result || result.name !== call.name) {
+      if (!Array.isArray(results) || results.length !== session.pendingCalls.length) {
         throw new AgentSessionError(
           "TOOL_RESULT_MISMATCH",
-          `工具结果与 ${call.callId} 不匹配。`,
+          "工具结果数量与模型调用数量不一致。",
           400,
         );
       }
-      outputItems.push({
-        type: "function_call_output",
-        call_id: call.callId,
-        output: serializeToolOutput(result.output),
-      });
-    }
 
-    session.input.push(...outputItems);
-    session.pendingCalls = null;
-    session.state = "idle";
-    session.streamSink = typeof hooks.onEvent === "function" ? hooks.onEvent : null;
-    session.lastTouched = this.now();
+      const resultsByCallId = new Map();
+      for (const result of results) {
+        if (!result || typeof result !== "object" || typeof result.callId !== "string") {
+          throw new AgentSessionError("TOOL_RESULT_INVALID", "工具结果缺少 callId。", 400);
+        }
+        if (resultsByCallId.has(result.callId)) {
+          throw new AgentSessionError("TOOL_RESULT_MISMATCH", "工具结果包含重复 callId。", 400);
+        }
+        resultsByCallId.set(result.callId, result);
+      }
 
-    try {
+      const outputItems = [];
+      for (const call of session.pendingCalls) {
+        const result = resultsByCallId.get(call.callId);
+        if (!result || result.name !== call.name) {
+          throw new AgentSessionError(
+            "TOOL_RESULT_MISMATCH",
+            `工具结果与 ${call.callId} 不匹配。`,
+            400,
+          );
+        }
+        outputItems.push({
+          type: "function_call_output",
+          call_id: call.callId,
+          output: serializeToolOutput(result.output),
+        });
+      }
+
+      session.input.push(...outputItems);
+      session.pendingCalls = null;
+      session.state = "idle";
+      session.streamSink = typeof hooks.onEvent === "function" ? hooks.onEvent : null;
+      session.lastTouched = this.now();
+
       return await this.#advance(session);
     } catch (error) {
-      this.#removeSession(sessionId);
+      await this.#handleFailure(session, error);
       throw error;
     }
   }
 
   async cancel(sessionId) {
-    const session = this.sessions.get(sessionId);
-    if (!session) {
-      return false;
-    }
+    const session = this.sessions.get(sessionId) ?? null;
     this.#removeSession(sessionId);
+    const cleared = await this.#clearRecovery(sessionId, session?.workbookBinding ?? null);
+    return Boolean(session) || cleared;
+  }
+
+  async suspend(sessionId) {
+    const session = this.sessions.get(sessionId);
+    if (!session) return false;
+
+    session.suspendedForRecovery = true;
+    session.lastTouched = this.now();
+    const phase = session.pendingCalls
+      ? RECOVERY_PHASES.toolCalls
+      : session.state === "requesting"
+        ? RECOVERY_PHASES.modelRequest
+        : RECOVERY_PHASES.stable;
+    this.sessions.delete(sessionId);
+    await this.#checkpoint(session, phase);
+    session.abortController?.abort();
     return true;
+  }
+
+  async restore(workbookBinding) {
+    const normalizedBinding = validateWorkbookBinding(workbookBinding);
+    if (!normalizedBinding || !this.recoveryStore) return null;
+
+    const restored = await this.recoveryStore.restore({ workbookKey: normalizedBinding });
+    if (restored?.status !== "available") {
+      return {
+        recovery: {
+          status: typeof restored?.status === "string" ? restored.status : "missing",
+        },
+      };
+    }
+    const snapshot = restored.snapshot;
+    let session;
+    try {
+      session = this.#hydrateRecoverySnapshot(
+        snapshot,
+        normalizedBinding,
+        restored.lastPaneHeartbeatAt,
+      );
+    } catch {
+      await this.#clearRecovery(restored.sessionId, normalizedBinding);
+      return null;
+    }
+    const existing = this.sessions.get(session.id);
+    if (existing) {
+      if (existing.workbookBinding !== normalizedBinding) return null;
+      if (existing.state !== "idle" || existing.pendingCalls) {
+        await this.suspend(existing.id);
+        return this.restore(normalizedBinding);
+      }
+      const previousPaneHeartbeatAt = existing.lastPaneHeartbeatAt;
+      existing.lastPaneHeartbeatAt = this.now();
+      const checkpointed = await this.#checkpoint(existing, existing.recoveryPhase);
+      if (!checkpointed) existing.lastPaneHeartbeatAt = previousPaneHeartbeatAt;
+      return this.#recoveryPayload(existing);
+    }
+
+    const phase = snapshot.recovery?.phase;
+    if (phase === RECOVERY_PHASES.toolCalls && session.pendingCalls?.length) {
+      session.input.push(...session.pendingCalls.map((call) => ({
+        type: "function_call_output",
+        call_id: call.callId,
+        output: serializeToolOutput(interruptedToolOutput(call)),
+      })));
+      session.pendingCalls = null;
+      session.recoveryNotice = "tool_execution_interrupted";
+    } else if (phase === RECOVERY_PHASES.modelRequest) {
+      session.recoveryNotice = "model_request_interrupted";
+    }
+    session.state = "idle";
+    const previousPaneHeartbeatAt = session.lastPaneHeartbeatAt;
+    const restoredAt = this.now();
+    session.lastTouched = restoredAt;
+    session.lastPaneHeartbeatAt = restoredAt;
+    session.recoveryPhase = RECOVERY_PHASES.stable;
+    this.sessions.set(session.id, session);
+    const checkpointed = await this.#checkpoint(session, RECOVERY_PHASES.stable);
+    if (!checkpointed) session.lastPaneHeartbeatAt = previousPaneHeartbeatAt;
+    return this.#recoveryPayload(session);
+  }
+
+  async touchRecovery(sessionId, workbookBinding) {
+    const normalizedBinding = validateWorkbookBinding(workbookBinding);
+    if (!normalizedBinding || !this.recoveryStore) return { status: "missing" };
+    if (typeof sessionId !== "string" || sessionId.trim() === "" || sessionId.length > 160) {
+      return { status: "missing" };
+    }
+    const normalizedSessionId = sessionId.trim();
+    const session = this.sessions.get(normalizedSessionId);
+    if (session) {
+      if (session.workbookBinding !== normalizedBinding) return { status: "missing" };
+      const previousPaneHeartbeatAt = session.lastPaneHeartbeatAt;
+      session.lastPaneHeartbeatAt = this.now();
+      const checkpointed = await this.#checkpoint(session, session.recoveryPhase);
+      if (!checkpointed) session.lastPaneHeartbeatAt = previousPaneHeartbeatAt;
+      return { status: checkpointed ? "touched" : "unavailable" };
+    }
+    try {
+      const touched = await this.recoveryStore.touch({
+        sessionId: normalizedSessionId,
+        workbookKey: normalizedBinding,
+      });
+      return { status: publicRecoveryTouchStatus(touched) };
+    } catch {
+      return { status: "unavailable" };
+    }
   }
 
   cleanupExpired() {
     const cutoff = this.now() - this.idleTtlMs;
     for (const [sessionId, session] of this.sessions) {
-      if (session.lastTouched <= cutoff) {
+      const expirationTimestamp = this.recoveryStore && session.workbookBinding &&
+        Number.isSafeInteger(session.lastPaneHeartbeatAt)
+        ? session.lastPaneHeartbeatAt
+        : session.lastTouched;
+      if (expirationTimestamp <= cutoff) {
         this.#removeSession(sessionId);
       }
     }
+    void this.recoveryStore?.cleanupExpired?.();
   }
 
-  dispose() {
+  async dispose() {
     clearInterval(this.sweepTimer);
-    for (const sessionId of [...this.sessions.keys()]) {
-      this.#removeSession(sessionId);
+    await Promise.all(
+      [...this.sessions.keys()].map((sessionId) =>
+        this.suspend(sessionId).catch(() => this.#removeSession(sessionId))),
+    );
+  }
+
+  async #handleFailure(session, error) {
+    if (session.cancelled || session.suspendedForRecovery) return;
+    if (this.recoveryStore && session.workbookBinding && isRecoverableProviderFailure(error)) {
+      session.abortController = null;
+      session.pendingCalls = null;
+      session.state = "idle";
+      session.lastTouched = this.now();
+      session.recoveryNotice = "model_request_interrupted";
+      await this.#checkpoint(session, RECOVERY_PHASES.modelRequest);
+      error.recoverableSession = true;
+      return;
     }
+    this.#removeSession(session.id);
+    await this.#clearRecovery(session.id, session.workbookBinding);
+  }
+
+  async #checkpoint(session, phase) {
+    session.recoveryPhase = phase;
+    if (!this.recoveryStore || !session.workbookBinding) return false;
+    try {
+      await this.recoveryStore.save({
+        sessionId: session.id,
+        workbookKey: session.workbookBinding,
+        lastPaneHeartbeatAt: session.lastPaneHeartbeatAt,
+        snapshot: {
+          version: 1,
+          lastActiveAt: session.lastTouched,
+          workbook: { binding: session.workbookBinding },
+          session: {
+            id: session.id,
+            input: structuredClone(session.input),
+            requestOptions: structuredClone(session.requestOptions),
+            stepCount: session.stepCount,
+            state: session.state,
+            pendingCalls: structuredClone(session.pendingCalls),
+            lastTouched: session.lastTouched,
+            lastPaneHeartbeatAt: session.lastPaneHeartbeatAt,
+          },
+          recovery: {
+            phase,
+            notice: session.recoveryNotice,
+          },
+          presentation: visiblePresentation(session.input),
+        },
+      });
+      if (session.recoveryUnavailable) {
+        session.recoveryUnavailable = false;
+        session.streamSink?.({ type: "recovery_available" });
+      }
+      return true;
+    } catch {
+      if (!session.recoveryUnavailable) {
+        session.recoveryUnavailable = true;
+        session.streamSink?.({ type: "recovery_unavailable" });
+      }
+      return false;
+    }
+  }
+
+  async #clearRecovery(sessionId, workbookBinding) {
+    if (!this.recoveryStore) return false;
+    try {
+      const cleared = await this.recoveryStore.clear({
+        sessionId,
+        ...(workbookBinding ? { workbookKey: workbookBinding } : {}),
+      });
+      return cleared?.status === "cleared";
+    } catch {
+      return false;
+    }
+  }
+
+  #hydrateRecoverySnapshot(snapshot, workbookBinding, lastPaneHeartbeatAt) {
+    const rawSession = snapshot?.session;
+    if (
+      !snapshot ||
+      typeof snapshot !== "object" ||
+      snapshot.workbook?.binding !== workbookBinding ||
+      !rawSession ||
+      typeof rawSession !== "object" ||
+      !Array.isArray(rawSession.input) ||
+      !Number.isSafeInteger(rawSession.stepCount) ||
+      rawSession.stepCount < 0
+    ) {
+      throw new AgentSessionError("RECOVERY_INVALID", "本地会话恢复数据无效。", 409);
+    }
+    const pendingCalls = rawSession.pendingCalls === null || rawSession.pendingCalls === undefined
+      ? null
+      : rawSession.pendingCalls;
+    if (
+      pendingCalls !== null &&
+      (!Array.isArray(pendingCalls) || pendingCalls.some((call) =>
+        !call || typeof call.callId !== "string" || typeof call.name !== "string"))
+    ) {
+      throw new AgentSessionError("RECOVERY_INVALID", "本地会话恢复数据无效。", 409);
+    }
+    const restoredAt = this.now();
+    return {
+      id: validateRequestedId(rawSession.id),
+      input: structuredClone(rawSession.input),
+      requestOptions: validateRequestOptions(rawSession.requestOptions),
+      workbookBinding,
+      stepCount: rawSession.stepCount,
+      state: "idle",
+      pendingCalls: pendingCalls === null ? null : structuredClone(pendingCalls),
+      abortController: null,
+      streamSink: null,
+      lastTouched: restoredAt,
+      lastPaneHeartbeatAt: Number.isSafeInteger(lastPaneHeartbeatAt)
+        ? lastPaneHeartbeatAt
+        : restoredAt,
+      recoveryPhase: RECOVERY_PHASES.stable,
+      recoveryNotice: typeof snapshot.recovery?.notice === "string" ? snapshot.recovery.notice : null,
+      suspendedForRecovery: false,
+      cancelled: false,
+      recoveryUnavailable: false,
+    };
+  }
+
+  #recoveryPayload(session) {
+    return {
+      sessionId: session.id,
+      presentation: visiblePresentation(session.input),
+      recovery: {
+        notice: session.recoveryNotice,
+      },
+    };
   }
 
   #getSession(sessionId) {
@@ -406,70 +761,104 @@ export class SessionManager {
 
   #removeSession(sessionId) {
     const session = this.sessions.get(sessionId);
+    if (session) session.cancelled = true;
     session?.abortController?.abort();
     this.sessions.delete(sessionId);
   }
 
   async #advance(session) {
-    const maxSteps = this.#currentMaxSteps();
-    if (session.stepCount >= maxSteps) {
-      throw new AgentSessionError(
-        "STEP_LIMIT_EXCEEDED",
-        `Agent 已达到 ${maxSteps} 个模型步骤上限。`,
-        409,
-      );
-    }
-
-    session.state = "requesting";
-    session.abortController = new AbortController();
-    session.lastTouched = this.now();
-    let response;
+    const streamSink = session.streamSink;
     try {
-      response = await this.responsesClient.create({
-        input: session.input,
-        signal: session.abortController.signal,
-        options: session.requestOptions,
-        onEvent: session.streamSink,
-      });
+      while (true) {
+        const maxSteps = this.#currentMaxSteps();
+        if (session.stepCount >= maxSteps) {
+          throw new AgentSessionError(
+            "STEP_LIMIT_EXCEEDED",
+            `Agent 已达到 ${maxSteps} 个模型步骤上限。`,
+            409,
+          );
+        }
+
+        session.state = "requesting";
+        session.abortController = new AbortController();
+        session.lastTouched = this.now();
+        session.recoveryNotice = null;
+        await this.#checkpoint(session, RECOVERY_PHASES.modelRequest);
+        if (session.cancelled || session.suspendedForRecovery || session.abortController.signal.aborted) {
+          throw new AgentSessionError("AGENT_CANCELLED", "当前 Agent 请求已停止。", 499);
+        }
+        let response;
+        try {
+          response = await this.responsesClient.create({
+            input: session.input,
+            signal: session.abortController.signal,
+            options: session.requestOptions,
+            onEvent: streamSink,
+          });
+        } finally {
+          session.abortController = null;
+        }
+
+        if (session.cancelled || session.suspendedForRecovery) {
+          throw new AgentSessionError("AGENT_CANCELLED", "当前 Agent 请求已停止。", 499);
+        }
+
+        session.stepCount += 1;
+        session.lastTouched = this.now();
+        const output = structuredClone(response.output);
+        const { calls, recoveryOutputs } = parseFunctionCalls(output);
+        const context = responseContext(response);
+        session.input.push(...output, ...recoveryOutputs);
+
+        if (calls.length > 0) {
+          if (session.stepCount >= this.#currentMaxSteps()) {
+            throw new AgentSessionError(
+              "STEP_LIMIT_EXCEEDED",
+              `Agent 已达到 ${this.#currentMaxSteps()} 个模型步骤上限。`,
+              409,
+            );
+          }
+          session.pendingCalls = calls;
+          session.state = "waiting_for_tools";
+          await this.#checkpoint(session, RECOVERY_PHASES.toolCalls);
+          if (session.cancelled || session.suspendedForRecovery) {
+            throw new AgentSessionError("AGENT_CANCELLED", "当前 Agent 请求已停止。", 499);
+          }
+          return {
+            sessionId: session.id,
+            status: "requires_action",
+            step: session.stepCount,
+            context,
+            toolCalls: calls,
+          };
+        }
+
+        if (recoveryOutputs.length > 0) {
+          streamSink?.({ type: "model_step_boundary" });
+          session.state = "idle";
+          await this.#checkpoint(session, RECOVERY_PHASES.stable);
+          if (session.cancelled || session.suspendedForRecovery) {
+            throw new AgentSessionError("AGENT_CANCELLED", "当前 Agent 请求已停止。", 499);
+          }
+          continue;
+        }
+
+        session.state = "idle";
+        await this.#checkpoint(session, RECOVERY_PHASES.stable);
+        if (session.cancelled || session.suspendedForRecovery) {
+          throw new AgentSessionError("AGENT_CANCELLED", "当前 Agent 请求已停止。", 499);
+        }
+        return {
+          sessionId: session.id,
+          status: "completed",
+          step: session.stepCount,
+          context,
+          message: extractOutputText(response),
+        };
+      }
     } finally {
-      session.abortController = null;
       session.streamSink = null;
     }
-
-    session.stepCount += 1;
-    session.lastTouched = this.now();
-    const output = structuredClone(response.output);
-    const calls = parseFunctionCalls(output);
-    const context = responseContext(response);
-    session.input.push(...output);
-
-    if (calls.length > 0) {
-      if (session.stepCount >= maxSteps) {
-        throw new AgentSessionError(
-          "STEP_LIMIT_EXCEEDED",
-          `Agent 已达到 ${maxSteps} 个模型步骤上限。`,
-          409,
-        );
-      }
-      session.pendingCalls = calls;
-      session.state = "waiting_for_tools";
-      return {
-        sessionId: session.id,
-        status: "requires_action",
-        step: session.stepCount,
-        context,
-        toolCalls: calls,
-      };
-    }
-
-    session.state = "idle";
-    return {
-      sessionId: session.id,
-      status: "completed",
-      step: session.stepCount,
-      context,
-      message: extractOutputText(response),
-    };
   }
 
   #currentMaxSteps() {

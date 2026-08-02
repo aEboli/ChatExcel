@@ -1,15 +1,27 @@
 import { AgentRunner } from "./agent-runner.js";
 import { summarizeToolOutput } from "./activity-summary.js";
 import { executeExcelTool, toToolErrorResult } from "./excel-executor.js";
-import { HistoryState } from "./history-state.js";
 import {
-  AttachmentError,
-  formatAttachmentSize,
-  MAX_ATTACHMENTS,
-  prepareImageFile,
-} from "./image-attachments.js";
+  captureOfficeHistoryPreview,
+  historyPreviewFallback,
+  historyPreviewTarget,
+} from "./history-preview.js";
+import { HistoryState } from "./history-state.js";
 
-const previewMode = new URLSearchParams(globalThis.location.search).get("preview") === "1";
+const pageParameters = new URLSearchParams(globalThis.location.search);
+const previewMode = pageParameters.get("preview") === "1";
+const legacySessionId = pageParameters.get("legacy");
+const legacyMode = /^[0-9a-f]{48}$/.test(legacySessionId ?? "");
+const RECOVERY_HEARTBEAT_MS = 30_000;
+const RECOVERY_BINDING_UNAVAILABLE_MESSAGE =
+  "当前工作簿没有可验证的稳定标识，已关闭本地恢复以避免将对话恢复到其他工作簿。";
+
+const PROTOCOL_MODEL_EXAMPLES = Object.freeze({
+  "openai-responses": ["GPT-5", "GPT-4.1", "o3", "o4-mini"],
+  "openai-chat-completions": ["Qwen3", "DeepSeek-V3", "GLM-4", "Kimi K2"],
+  "anthropic-messages": ["Claude Opus", "Claude Sonnet", "Claude Haiku"],
+  "google-gemini": ["Gemini 2.5 Pro", "Gemini 2.5 Flash", "Gemini Flash-Lite"],
+});
 
 const elements = {
   statusDot: document.querySelector("#status-dot"),
@@ -24,15 +36,19 @@ const elements = {
   historyBanner: document.querySelector("#history-banner"),
   historyLabel: document.querySelector("#history-label"),
   historyLatestButton: document.querySelector("#history-latest-button"),
+  historyPreview: document.querySelector("#history-preview"),
+  historyPreviewTitle: document.querySelector("#history-preview-title"),
+  historyPreviewBody: document.querySelector("#history-preview-body"),
   conversation: document.querySelector("#conversation"),
+  recoveryNotice: document.querySelector("#recovery-notice"),
+  recoveryNoticeText: document.querySelector("#recovery-notice-text"),
+  clearRecoveryButton: document.querySelector("#clear-recovery-button"),
   approval: document.querySelector("#approval"),
   approvalTitle: document.querySelector("#approval-title"),
   approvalTarget: document.querySelector("#approval-target"),
   approvalArguments: document.querySelector("#approval-arguments"),
   approveButton: document.querySelector("#approve-button"),
   denyButton: document.querySelector("#deny-button"),
-  attachmentError: document.querySelector("#attachment-error"),
-  attachmentList: document.querySelector("#attachment-list"),
   promptInput: document.querySelector("#prompt-input"),
   modelButton: document.querySelector("#model-button"),
   modelLabel: document.querySelector("#model-label"),
@@ -42,8 +58,6 @@ const elements = {
   effortMenu: document.querySelector("#effort-menu"),
   contextButton: document.querySelector("#context-button"),
   contextLabel: document.querySelector("#context-label"),
-  imageInput: document.querySelector("#image-input"),
-  imageButton: document.querySelector("#image-button"),
   easterFooter: document.querySelector("#easter-footer"),
   easterTrigger: document.querySelector("#easter-trigger"),
   modeButton: document.querySelector("#mode-button"),
@@ -61,6 +75,7 @@ const elements = {
   fetchSystemModelsButton: document.querySelector("#fetch-system-models-button"),
   customSettings: document.querySelector("#custom-settings"),
   apiProtocol: document.querySelector("#api-protocol"),
+  protocolModelList: document.querySelector("#protocol-model-list"),
   apiUrl: document.querySelector("#api-url"),
   apiKey: document.querySelector("#api-key"),
   fetchModelsButton: document.querySelector("#fetch-models-button"),
@@ -84,13 +99,17 @@ const activityRows = new Map();
 const activityGroups = new Map();
 const registeredWorksheetIds = new Set();
 const settingsBackground = [...document.querySelectorAll(".app-shell > :not(#settings-view):not(#confirm-modal)")];
-let attachments = [];
 let approvalMode = "required";
+let approvalModeSaving = false;
+let providerConnectivityState = "checking";
+let providerConnectivityCode = "";
+let providerProbeId = 0;
 let configState = null;
 let selectedModel = null;
 let selectedReasoningEffort = null;
 let currentContext = null;
 let workbookIdentity = "当前工作簿";
+let workbookBinding = null;
 let configStatusTitle = "配置尚未读取";
 let settingsDiscoveredModels = [];
 let pendingConfirmation = null;
@@ -98,17 +117,28 @@ let workbookCollectionEventsRegistered = false;
 let workbookLabelTimer = null;
 let manualChangePromptActive = false;
 let suppressWorkbookChangesUntil = 0;
+let legacyRevision = 0;
+let legacyActiveSheetRevision = 0;
+let legacyStateTimer = null;
 let streamingAssistantId = null;
+let streamingAssistantStepTextLength = 0;
 let currentOperationId = null;
 let currentRunOutcome = "success";
 let uiBusy = false;
+let recoveryHeartbeatTimer = null;
+let clearingRecoverySession = false;
+let suppressNextStoppedNotice = false;
+let recoveryUnavailable = false;
+let recoveryDisabledForBinding = false;
+let selectedHistoryActivityIndex = null;
 
 class ApiError extends Error {
-  constructor(code, message, status) {
+  constructor(code, message, status, { recoverableSession = false } = {}) {
     super(message);
     this.name = "ApiError";
     this.code = code;
     this.status = status;
+    this.recoverableSession = recoverableSession === true;
   }
 }
 
@@ -132,6 +162,7 @@ async function requestJson(path, { method = "GET", body, signal } = {}) {
       payload.error?.code ?? "API_ERROR",
       payload.error?.message ?? "本地服务请求失败。",
       response.status,
+      { recoverableSession: payload.error?.recoverableSession === true },
     );
   }
   return payload;
@@ -156,11 +187,12 @@ async function requestStream(path, { method = "POST", body, signal, onEvent } = 
       throw new ApiError("API_RESPONSE_INVALID", "本地服务返回了无效响应。", response.status);
     }
     if (!response.ok || payload.ok === false) {
-      throw new ApiError(
-        payload.error?.code ?? "API_ERROR",
-        payload.error?.message ?? "本地服务请求失败。",
-        response.status,
-      );
+        throw new ApiError(
+          payload.error?.code ?? "API_ERROR",
+          payload.error?.message ?? "本地服务请求失败。",
+          response.status,
+          { recoverableSession: payload.error?.recoverableSession === true },
+        );
     }
     return payload;
   }
@@ -200,6 +232,7 @@ async function requestStream(path, { method = "POST", body, signal, onEvent } = 
         payload.error?.code ?? "API_ERROR",
         payload.error?.message ?? "本地服务请求失败。",
         response.status,
+        { recoverableSession: payload.error?.recoverableSession === true },
       );
     }
   };
@@ -240,17 +273,17 @@ async function requestStream(path, { method = "POST", body, signal, onEvent } = 
 }
 
 const api = {
-  start: ({ sessionId, message, attachments: images, model, reasoningEffort, signal, onEvent }) =>
+  start: ({ sessionId, message, model, reasoningEffort, workbookBinding, signal, onEvent }) =>
     requestStream("/api/sessions", {
       method: "POST",
-      body: { sessionId, message, attachments: images, model, reasoningEffort },
+      body: { sessionId, message, model, reasoningEffort, workbookBinding },
       signal,
       onEvent,
     }),
-  addMessage: ({ sessionId, message, attachments: images, model, reasoningEffort, signal, onEvent }) =>
+  addMessage: ({ sessionId, message, model, reasoningEffort, workbookBinding, signal, onEvent }) =>
     requestStream(`/api/sessions/${encodeURIComponent(sessionId)}/messages`, {
       method: "POST",
-      body: { message, attachments: images, model, reasoningEffort },
+      body: { message, model, reasoningEffort, workbookBinding },
       signal,
       onEvent,
     }),
@@ -263,8 +296,23 @@ const api = {
     }),
   cancel: ({ sessionId }) =>
     requestJson(`/api/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" }),
+  restoreConversation: ({ workbookBinding }) => requestJson("/api/conversation-recovery/restore", {
+    method: "POST",
+    body: { workbookBinding },
+  }),
+  touchConversation: ({ sessionId, workbookBinding }) => requestJson("/api/conversation-recovery/touch", {
+    method: "POST",
+    body: { sessionId, workbookBinding },
+  }),
+  clearConversation: ({ sessionId }) =>
+    requestJson(`/api/conversation-recovery/${encodeURIComponent(sessionId)}`, { method: "DELETE" }),
   saveSettings: (settings) => requestJson("/api/settings", { method: "POST", body: settings }),
+  saveApprovalMode: (approvalMode) => requestJson("/api/settings/approval-mode", {
+    method: "POST",
+    body: { approvalMode },
+  }),
   discoverModels: (settings) => requestJson("/api/models", { method: "POST", body: settings }),
+  probeProviderConnectivity: () => requestJson("/api/provider-connectivity", { method: "POST", body: {} }),
 };
 
 function createIcon(source) {
@@ -303,7 +351,19 @@ function fileBaseName(rawUrl) {
   return fileName.replace(/\.(?:xlsx|xlsm|xlsb|xls)$/i, "") || "当前工作簿";
 }
 
+function workbookBindingFromDocumentUrl(rawUrl) {
+  if (typeof rawUrl !== "string" || rawUrl.trim() === "") return null;
+  const path = rawUrl.trim().split(/[?#]/, 1)[0];
+  return path === "" ? null : `document-url:${path}`;
+}
+
 async function readWorkbookIdentity() {
+  if (legacyMode) {
+    const state = await requestLegacy({ action: "state" });
+    legacyRevision = state.revision;
+    legacyActiveSheetRevision = state.activeSheetRevision;
+    return state.label;
+  }
   if (previewMode || !globalThis.Excel) return "销售分析-Sheet1";
   try {
     return await Excel.run(async (context) => {
@@ -335,13 +395,159 @@ async function refreshWorkbookIdentity() {
   }
 }
 
+async function readWorkbookBinding() {
+  if (legacyMode) return `legacy:${legacySessionId}`;
+  if (previewMode || !globalThis.Excel) return null;
+
+  return workbookBindingFromDocumentUrl(globalThis.Office?.context?.document?.url);
+}
+
+async function prepareWorkbookBinding() {
+  const wasDisabledForBinding = recoveryDisabledForBinding;
+  try {
+    workbookBinding = await readWorkbookBinding();
+  } catch {
+    workbookBinding = null;
+  }
+  recoveryDisabledForBinding = !workbookBinding && !previewMode;
+  if (recoveryDisabledForBinding) {
+    stopRecoveryHeartbeat();
+    setRecoveryNotice(RECOVERY_BINDING_UNAVAILABLE_MESSAGE, { kind: "warning" });
+  } else if (wasDisabledForBinding && !recoveryUnavailable) {
+    setRecoveryNotice("");
+  }
+  return workbookBinding;
+}
+
 function queueWorkbookIdentityRefresh() {
   clearTimeout(workbookLabelTimer);
   workbookLabelTimer = setTimeout(() => void refreshWorkbookIdentity(), 120);
 }
 
-function appendMessage(role, text, messageAttachments = []) {
-  history.addMessage(role, text || "模型未返回文本。", { attachments: messageAttachments });
+function setRecoveryNotice(message, { clearable = false, kind = "info" } = {}) {
+  const visible = typeof message === "string" && message.trim() !== "";
+  elements.recoveryNotice.hidden = !visible;
+  elements.recoveryNotice.dataset.kind = visible ? kind : "";
+  elements.recoveryNoticeText.textContent = visible ? message : "";
+  elements.clearRecoveryButton.hidden = !visible || !clearable;
+  elements.clearRecoveryButton.disabled = !clearable;
+}
+
+function resetRecoveredPresentation() {
+  history.clear();
+  selectedHistoryActivityIndex = null;
+  activityRows.clear();
+  activityGroups.clear();
+  elements.activityList.replaceChildren(elements.activityEmpty);
+  elements.activityEmpty.hidden = false;
+  elements.activityCount.textContent = "0";
+  currentOperationId = null;
+  streamingAssistantId = null;
+  streamingAssistantStepTextLength = 0;
+}
+
+function recoveryStateFromPayload(payload) {
+  const value = payload?.recovery ?? payload?.active ?? payload;
+  return value && typeof value === "object" ? value : null;
+}
+
+function recoveryPresentationMessages(recovery) {
+  return Array.isArray(recovery?.presentationMessages) ? recovery.presentationMessages : [];
+}
+
+function stopRecoveryHeartbeat() {
+  if (recoveryHeartbeatTimer === null) return;
+  clearInterval(recoveryHeartbeatTimer);
+  recoveryHeartbeatTimer = null;
+}
+
+async function touchConversationRecovery() {
+  const sessionId = runner.sessionId;
+  const binding = workbookBinding;
+  if (!sessionId || !binding || previewMode) return;
+
+  try {
+    const response = await api.touchConversation({ sessionId, workbookBinding: binding });
+    if (runner.sessionId !== sessionId) return;
+    const active = recoveryStateFromPayload(response);
+    if (active?.status === "touched") {
+      if (recoveryUnavailable) {
+        recoveryUnavailable = false;
+        if (!runner.running) {
+          setRecoveryNotice("本地恢复已恢复，可继续防护闪退。", { clearable: true, kind: "info" });
+        }
+      }
+      return;
+    }
+    if (active?.status === "unavailable") {
+      recoveryUnavailable = true;
+      setRecoveryNotice(
+        "本地恢复暂不可用，当前对话仍可继续但闪退后可能无法恢复。",
+        { kind: "warning" },
+      );
+      return;
+    }
+    if (["expired", "missing", "mismatch"].includes(active?.status)) {
+      stopRecoveryHeartbeat();
+      if (active.status === "expired") {
+        setRecoveryNotice("当前恢复会话已过期并被安全清除。", { kind: "warning" });
+      } else {
+        recoveryUnavailable = true;
+        setRecoveryNotice(
+          "本地恢复记录已不存在，当前对话仍可继续但闪退后可能无法恢复。",
+          { kind: "warning" },
+        );
+      }
+    }
+  } catch {
+    // The in-memory conversation can still finish; a later heartbeat may recover the cache.
+  }
+}
+
+function startRecoveryHeartbeat() {
+  stopRecoveryHeartbeat();
+  if (!runner.sessionId || !workbookBinding || previewMode) return;
+  recoveryHeartbeatTimer = setInterval(() => void touchConversationRecovery(), RECOVERY_HEARTBEAT_MS);
+}
+
+async function restoreConversationRecovery() {
+  if (!workbookBinding || previewMode) return;
+
+  try {
+    const response = await api.restoreConversation({ workbookBinding });
+    const recovery = recoveryStateFromPayload(response);
+    if (!recovery) return;
+
+    if (recovery.status === "available") {
+      if (typeof recovery.sessionId !== "string" || recovery.sessionId.trim() === "") {
+        setRecoveryNotice("本地恢复记录无效，未恢复旧对话。", { kind: "warning" });
+        return;
+      }
+      runner.restoreSession(recovery.sessionId);
+      resetRecoveredPresentation();
+      history.restorePresentation(recoveryPresentationMessages(recovery));
+      renderHistoricalState();
+      setRecoveryNotice(
+        "已恢复当前工作簿的短期对话。中断的模型请求或 Excel 修改不会自动重发，请检查后再继续。",
+        { clearable: true, kind: "warning" },
+      );
+      startRecoveryHeartbeat();
+      void touchConversationRecovery();
+      return;
+    }
+
+    if (recovery.status === "expired") {
+      setRecoveryNotice("上次会话恢复期限已结束，记录已安全清除。", { kind: "warning" });
+    } else if (recovery.status === "unavailable") {
+      setRecoveryNotice("本地恢复暂不可用，未恢复旧对话。", { kind: "warning" });
+    }
+  } catch {
+    setRecoveryNotice("本地恢复暂不可用，未恢复旧对话。", { kind: "warning" });
+  }
+}
+
+function appendMessage(role, text) {
+  history.addMessage(role, text || "模型未返回文本。");
   renderConversation();
 }
 
@@ -354,17 +560,74 @@ function appendAssistantDelta(text) {
   const message = history.updateMessage(streamingAssistantId, {
     text: `${history.messages.find((entry) => entry.id === streamingAssistantId)?.text ?? ""}${text}`,
   });
-  if (message) renderConversation();
+  if (message) {
+    streamingAssistantStepTextLength += text.length;
+    renderConversation();
+  }
+}
+
+function resetStreamingAssistant(discardTextLength) {
+  if (!Number.isSafeInteger(discardTextLength) || discardTextLength <= 0) {
+    return;
+  }
+  streamingAssistantStepTextLength = Math.max(0, streamingAssistantStepTextLength - discardTextLength);
+  if (!streamingAssistantId) return;
+  const message = history.messages.find((entry) => entry.id === streamingAssistantId);
+  if (!message) {
+    streamingAssistantId = null;
+    return;
+  }
+  const updated = history.trimMessageSuffix(streamingAssistantId, discardTextLength);
+  if (!updated || updated.text === "") {
+    streamingAssistantId = null;
+  }
+  renderConversation();
 }
 
 function finishAssistantMessage(text) {
   if (streamingAssistantId) {
-    history.updateMessage(streamingAssistantId, { text: text || "模型未返回文本。" });
+    const messageId = streamingAssistantId;
+    const message = history.messages.find((entry) => entry.id === messageId);
+    const preservePrefixLength = Math.max(
+      0,
+      (typeof message?.text === "string" ? message.text.length : 0) - streamingAssistantStepTextLength,
+    );
     streamingAssistantId = null;
-    renderConversation();
-    return;
+    streamingAssistantStepTextLength = 0;
+    if (history.finalizeMessage(messageId, text, { preservePrefixLength })) {
+      renderConversation();
+      return;
+    }
   }
+  streamingAssistantStepTextLength = 0;
   appendMessage("assistant", text);
+}
+
+function createConversationMessage(entry, { actionStep = false } = {}) {
+  const message = document.createElement("div");
+  message.className = `message ${entry.role}`;
+  if (actionStep) message.classList.add("action-flow-step");
+  if (entry.id === streamingAssistantId) message.classList.add("is-streaming");
+  const copy = document.createElement("div");
+  copy.textContent = entry.text;
+  message.append(copy);
+  return message;
+}
+
+function createActionFlow(entries) {
+  const flow = document.createElement("div");
+  flow.className = "action-flow";
+  flow.setAttribute("aria-label", "自动审批动作");
+  for (const [index, entry] of entries.entries()) {
+    flow.append(createConversationMessage(entry, { actionStep: true }));
+    if (index < entries.length - 1) {
+      const arrow = createIcon("/assets/fluent/arrow-up.svg");
+      arrow.className = "action-flow-arrow";
+      arrow.setAttribute("aria-hidden", "true");
+      flow.append(arrow);
+    }
+  }
+  return flow;
 }
 
 function renderConversation() {
@@ -379,25 +642,19 @@ function renderConversation() {
     empty.append(label);
     fragment.append(empty);
   } else {
-    for (const entry of visibleMessages) {
-      const message = document.createElement("div");
-      message.className = `message ${entry.role}`;
-      if (entry.id === streamingAssistantId) message.classList.add("is-streaming");
-      if (entry.attachments.length > 0) {
-        const images = document.createElement("div");
-        images.className = "message-images";
-        for (const attachment of entry.attachments) {
-          const image = document.createElement("img");
-          image.src = attachment.dataUrl;
-          image.alt = attachment.name || "消息图片";
-          images.append(image);
-        }
-        message.append(images);
+    for (let index = 0; index < visibleMessages.length; index += 1) {
+      const entry = visibleMessages[index];
+      if (entry.role !== "notice") {
+        fragment.append(createConversationMessage(entry));
+        continue;
       }
-      const copy = document.createElement("div");
-      copy.textContent = entry.text;
-      message.append(copy);
-      fragment.append(message);
+
+      const notices = [entry];
+      while (visibleMessages[index + 1]?.role === "notice") {
+        notices.push(visibleMessages[index + 1]);
+        index += 1;
+      }
+      fragment.append(createActionFlow(notices));
     }
   }
   elements.conversation.replaceChildren(fragment);
@@ -506,7 +763,7 @@ function ensureActivityRow(event) {
   row.className = "activity-row";
   row.dataset.status = "pending";
   row.dataset.index = String(entry.index);
-  row.title = "查看此步骤对应的历史上下文";
+  row.title = "查看此步骤对应的历史表格和对话上下文";
 
   const indicator = document.createElement("span");
   indicator.className = "activity-indicator";
@@ -533,6 +790,7 @@ function ensureActivityRow(event) {
   row.addEventListener("click", () => {
     if (runner.running) return;
     history.select(entry.index);
+    selectedHistoryActivityIndex = entry.index;
     renderHistoricalState();
   });
 
@@ -551,6 +809,7 @@ function updateActivity(event, status, stateText, resultText = null) {
     status,
     state: stateText,
     ...(resultText ? { result: resultText } : {}),
+    ...(event.preview ? { preview: event.preview } : {}),
   });
   row.dataset.status = status;
   row.querySelector(".activity-state").textContent = stateText;
@@ -566,22 +825,89 @@ function updateActivity(event, status, stateText, resultText = null) {
   }
 }
 
+function renderHistoryPreview(entry) {
+  elements.historyPreviewBody.replaceChildren();
+  elements.historyPreview.hidden = !entry;
+  if (!entry) return;
+
+  const preview = entry.preview;
+  const target = [preview?.worksheet, preview?.address].filter(Boolean).join(" · ");
+  elements.historyPreviewTitle.textContent = target || entry.label || "历史步骤预览";
+
+  if (!preview || preview.kind === "summary") {
+    const message = document.createElement("p");
+    message.className = "history-preview-empty";
+    message.textContent = preview?.message ?? "该步骤的表格预览不可用。";
+    elements.historyPreviewBody.append(message);
+    return;
+  }
+
+  if (preview.kind === "image") {
+    const image = document.createElement("img");
+    image.className = "history-preview-image";
+    image.src = preview.dataUrl;
+    image.alt = `操作 #${entry.index + 1} 的${target || "工作簿"}预览`;
+    elements.historyPreviewBody.append(image);
+  } else if (preview.kind === "grid") {
+    const table = document.createElement("table");
+    table.className = "history-preview-grid";
+    const header = document.createElement("thead");
+    const headerRow = document.createElement("tr");
+    headerRow.append(document.createElement("th"));
+    for (const column of preview.columns ?? []) {
+      const cell = document.createElement("th");
+      cell.scope = "col";
+      cell.textContent = column;
+      headerRow.append(cell);
+    }
+    header.append(headerRow);
+    const body = document.createElement("tbody");
+    for (const row of preview.rows ?? []) {
+      const rowElement = document.createElement("tr");
+      const rowLabel = document.createElement("th");
+      rowLabel.scope = "row";
+      rowLabel.textContent = String(row.row);
+      rowElement.append(rowLabel);
+      for (const cell of row.cells) {
+        const cellElement = document.createElement("td");
+        cellElement.textContent = cell.text;
+        if (cell.formula) cellElement.title = cell.formula;
+        rowElement.append(cellElement);
+      }
+      body.append(rowElement);
+    }
+    table.append(header, body);
+    elements.historyPreviewBody.append(table);
+  }
+
+  if (preview.truncated) {
+    const notice = document.createElement("p");
+    notice.className = "history-preview-note";
+    notice.textContent = "预览已裁剪为可查看的范围。";
+    elements.historyPreviewBody.append(notice);
+  }
+}
+
 function renderHistoricalState() {
-  const selected = history.cursor;
+  const selected = selectedHistoryActivityIndex;
+  const selectedEntry = selected === null ? null : history.activities[selected] ?? null;
   for (const entry of history.activities) {
     activityRows.get(entry.callId)?.classList.toggle("is-selected", entry.index === selected);
   }
   for (const operation of history.operations) renderActivityGroup(operation.id);
   elements.activityEmpty.hidden = history.operations.length > 0;
-  elements.historyBanner.hidden = !history.isHistorical;
-  if (history.isHistorical) {
-    elements.historyLabel.textContent = `历史上下文 #${history.selectedIndex + 1} · 不会回滚工作簿`;
+  elements.historyBanner.hidden = !selectedEntry;
+  if (selectedEntry) {
+    elements.historyLabel.textContent = `历史步骤 #${selectedEntry.index + 1} · 仅预览，不会修改或保存工作簿`;
+    elements.historyLatestButton.textContent = history.isHistorical ? "回到最新" : "关闭预览";
   }
+  renderHistoryPreview(selectedEntry);
   renderConversation();
 }
 
 function goToLatestHistory() {
   history.goLatest();
+  selectedHistoryActivityIndex = null;
   renderHistoricalState();
 }
 
@@ -620,6 +946,11 @@ async function guardHistoricalConversation() {
 
 async function undoLatestWorkbookChange() {
   suppressWorkbookChangesUntil = Date.now() + 1_500;
+  if (legacyMode) {
+    const result = await requestLegacy({ action: "undo" });
+    legacyRevision = result.revision;
+    return;
+  }
   await Excel.run(async (context) => {
     context.workbook.application.undo();
     await context.sync();
@@ -662,6 +993,11 @@ async function handleManualWorkbookChange() {
 }
 
 async function registerWorkbookEvents() {
+  if (legacyMode) {
+    clearInterval(legacyStateTimer);
+    legacyStateTimer = setInterval(() => void pollLegacyState(), 750);
+    return;
+  }
   if (previewMode || !globalThis.Excel) return;
   await Excel.run(async (context) => {
     const worksheets = context.workbook.worksheets;
@@ -682,6 +1018,29 @@ async function registerWorkbookEvents() {
     }
     await context.sync();
   });
+}
+
+async function pollLegacyState() {
+  try {
+    const state = await requestLegacy({ action: "state" });
+    if (state.closed) throw new Error("原生 .xls 工作簿已关闭。");
+    if (state.activeSheetRevision !== legacyActiveSheetRevision) {
+      legacyActiveSheetRevision = state.activeSheetRevision;
+      setWorkbookIdentity(state.label);
+    }
+    if (state.revision !== legacyRevision) {
+      const wasExternal = Date.now() > suppressWorkbookChangesUntil;
+      legacyRevision = state.revision;
+      if (wasExternal) void handleManualWorkbookChange();
+    }
+  } catch (error) {
+    clearInterval(legacyStateTimer);
+    legacyStateTimer = null;
+    elements.statusDot.className = "status-dot is-error";
+    setWorkbookIdentity("XLS 原生会话已断开");
+    elements.promptInput.disabled = true;
+    updateSendState();
+  }
 }
 
 function closeMenus(except = null) {
@@ -774,9 +1133,43 @@ function updateContextControl() {
   }
 }
 
+function providerConnectivityDescription() {
+  if (providerConnectivityState === "ready") return "当前模型提供方连通成功";
+  if (providerConnectivityState === "error") {
+    if (providerConnectivityCode === "PROVIDER_TIMEOUT") return "当前模型提供方连接超时";
+    if (providerConnectivityCode === "PROVIDER_HTTP_ERROR") return "当前模型提供方拒绝连接";
+    if (providerConnectivityCode === "PROVIDER_RESPONSE_INVALID") return "当前模型提供方响应无效";
+    return "无法连接当前模型提供方";
+  }
+  return "正在测试当前模型提供方连通性";
+}
+
+function updateProviderConnectivityVisuals() {
+  const state = providerConnectivityState === "ready"
+    ? "ready"
+    : providerConnectivityState === "error"
+      ? "error"
+      : "checking";
+  const description = providerConnectivityDescription();
+  const modelTitle = selectedModel ? `模型：${selectedModel}` : "选择模型";
+  for (const button of [elements.modelButton, elements.settingsButton]) {
+    button.dataset.providerConnectivity = state;
+    button.setAttribute("aria-busy", String(state === "checking"));
+  }
+  elements.modelButton.title = `${modelTitle} · ${description}`;
+  elements.modelButton.setAttribute("aria-label", `${modelTitle}，${description}`);
+  elements.settingsButton.title = `打开设置 · ${description}`;
+  elements.settingsButton.setAttribute("aria-label", `打开设置，${description}`);
+}
+
+function setProviderConnectivityState(state, code = "") {
+  providerConnectivityState = state === "ready" ? "ready" : state === "error" ? "error" : "checking";
+  providerConnectivityCode = typeof code === "string" ? code : "";
+  updateProviderConnectivityVisuals();
+}
+
 function updateComposerControls() {
   elements.modelLabel.textContent = selectedModel || "模型";
-  elements.modelButton.title = selectedModel ? `模型：${selectedModel}` : "选择模型";
   elements.effortLabel.textContent = selectedReasoningEffort || "思考";
   elements.effortButton.title = selectedReasoningEffort
     ? `思考等级：${selectedReasoningEffort}`
@@ -784,6 +1177,7 @@ function updateComposerControls() {
   renderModelMenu();
   renderEffortMenu();
   updateContextControl();
+  updateProviderConnectivityVisuals();
 }
 
 function normalizeConfigState(payload) {
@@ -792,7 +1186,11 @@ function normalizeConfigState(payload) {
     models.unshift({
       id: payload.config.model,
       reasoningEfforts: payload.config.reasoningEfforts ?? [payload.config.reasoningEffort ?? "none"],
+      reasoningMode: payload.config.reasoningMode ?? "levels",
       reasoningSource: payload.config.reasoningSource ?? "inferred",
+      defaultReasoningEffort: payload.config.defaultReasoningEffort ?? payload.config.reasoningEffort ?? null,
+      contextWindow: payload.config.contextWindow,
+      contextSource: payload.config.contextSource ?? null,
     });
   }
   return {
@@ -806,6 +1204,7 @@ function normalizeConfigState(payload) {
       contextWindow: payload.config?.contextWindow,
       reasoningEffort: payload.config?.reasoningEffort,
       maxSteps: 100,
+      approvalMode: "required",
     },
   };
 }
@@ -826,11 +1225,13 @@ function applyConfigState(payload, { preserveSelection = true } = {}) {
   elements.statusDot.className = "status-dot is-ready";
   configStatusTitle = `${configState.config.providerName} · ${configState.config.model}\n${configState.config.endpoint}`;
   updateWorkbookStatusTitle();
+  setApprovalMode(configState.settings.approvalMode);
   updateComposerControls();
 }
 
 async function refreshConfig() {
   elements.statusDot.className = "status-dot is-loading";
+  setProviderConnectivityState("checking");
   configStatusTitle = "正在连接本地配置";
   updateWorkbookStatusTitle();
   try {
@@ -839,9 +1240,30 @@ async function refreshConfig() {
     return payload;
   } catch (error) {
     elements.statusDot.className = "status-dot is-error";
+    setProviderConnectivityState("error", typeof error?.code === "string" ? error.code : "");
     configStatusTitle = error instanceof Error ? error.message : "配置不可用";
     updateWorkbookStatusTitle();
     throw error;
+  }
+}
+
+async function refreshProviderConnectivity() {
+  const probeId = ++providerProbeId;
+  setProviderConnectivityState("checking");
+  try {
+    const payload = await api.probeProviderConnectivity();
+    if (probeId !== providerProbeId) return payload;
+    const connectivity = payload?.connectivity;
+    setProviderConnectivityState(
+      connectivity?.status === "connected" ? "ready" : "error",
+      connectivity?.code,
+    );
+    return payload;
+  } catch (error) {
+    if (probeId === providerProbeId) {
+      setProviderConnectivityState("error", error?.code);
+    }
+    return null;
   }
 }
 
@@ -857,10 +1279,35 @@ function setApprovalMode(mode) {
   }
 }
 
+async function persistApprovalMode(mode) {
+  const nextMode = mode === "auto" ? "auto" : "required";
+  if (nextMode === approvalMode) {
+    closeMenus();
+    return;
+  }
+  const previousMode = approvalMode;
+  setApprovalMode(nextMode);
+  closeMenus();
+  approvalModeSaving = true;
+  elements.modeButton.disabled = true;
+  updateSendState();
+  try {
+    const payload = await api.saveApprovalMode(nextMode);
+    applyConfigState(payload);
+  } catch (error) {
+    setApprovalMode(previousMode);
+    elements.runStatus.textContent = error instanceof Error ? `审批设置未保存：${error.message}` : "审批设置未保存。";
+  } finally {
+    approvalModeSaving = false;
+    elements.modeButton.disabled = uiBusy || !configState;
+    updateSendState();
+  }
+}
+
 function updateSendState() {
-  const hasContent = elements.promptInput.value.trim() !== "" || attachments.length > 0;
+  const hasContent = elements.promptInput.value.trim() !== "";
   const busy = uiBusy;
-  elements.sendButton.disabled = busy ? false : !configState || !hasContent;
+  elements.sendButton.disabled = busy ? false : approvalModeSaving || !configState || !hasContent;
   elements.sendButton.classList.toggle("is-busy", busy);
   elements.sendButton.setAttribute("aria-busy", String(busy));
   elements.sendButton.title = busy ? "停止当前任务" : "发送";
@@ -877,8 +1324,7 @@ function setBusy(busy) {
   elements.promptInput.disabled = busy;
   elements.modelButton.disabled = busy || !configState;
   elements.effortButton.disabled = busy || availableReasoningEfforts().length === 0;
-  elements.imageButton.disabled = busy;
-  elements.modeButton.disabled = busy;
+  elements.modeButton.disabled = busy || approvalModeSaving || !configState;
   elements.settingsButton.disabled = busy;
   for (const row of activityRows.values()) row.disabled = busy;
   if (!busy) elements.runStatus.textContent = "";
@@ -927,7 +1373,16 @@ function requestApproval(call, { signal }) {
 async function safeExecuteTool(name, args) {
   suppressWorkbookChangesUntil = Date.now() + 1_200;
   try {
-    return await executeExcelTool(name, args);
+    const result = legacyMode
+      ? await requestLegacy({ action: "execute", name, arguments: args })
+      : await executeExcelTool(name, args);
+    if (legacyMode) {
+      const state = await requestLegacy({ action: "state" });
+      legacyRevision = state.revision;
+      legacyActiveSheetRevision = state.activeSheetRevision;
+      setWorkbookIdentity(state.label);
+    }
+    return result;
   } catch (error) {
     return toToolErrorResult(error);
   } finally {
@@ -935,26 +1390,79 @@ async function safeExecuteTool(name, args) {
   }
 }
 
+async function captureLegacyHistoryPreview(details) {
+  const fallback = historyPreviewFallback(details);
+  const target = historyPreviewTarget(details);
+  if (details.output?.ok === false || !target?.address) return fallback;
+
+  try {
+    const output = await requestLegacy({
+      action: "execute",
+      name: "read_range",
+      arguments: { worksheet: target.worksheet ?? null, address: target.address },
+    });
+    return historyPreviewFallback({ ...details, output });
+  } catch {
+    return fallback;
+  }
+}
+
+async function captureToolPreview(details) {
+  return legacyMode
+    ? captureLegacyHistoryPreview(details)
+    : captureOfficeHistoryPreview(details);
+}
+
+function requestLegacy(body) {
+  if (!legacyMode) throw new ApiError("LEGACY_SESSION_INVALID", "原生 XLS 会话不可用。", 400);
+  return requestJson(`/api/legacy/${legacySessionId}`, { method: "POST", body });
+}
+
 function handleRunnerEvent(event) {
   switch (event.type) {
     case "run_started":
-      currentOperationId = history.startOperation({ label: event.message || "分析图片" }).id;
+      currentOperationId = history.startOperation({ label: event.message || "分析工作簿" }).id;
       currentRunOutcome = "success";
       streamingAssistantId = null;
+      streamingAssistantStepTextLength = 0;
       ensureActivityGroup(currentOperationId);
       elements.activityEmpty.hidden = true;
-      appendMessage("user", event.message || "分析图片", event.attachments);
+      appendMessage("user", event.message || "分析工作簿");
       elements.runStatus.textContent = "";
       setBusy(true);
+      startRecoveryHeartbeat();
       break;
     case "assistant_delta":
+      elements.runStatus.textContent = "";
       appendAssistantDelta(event.text);
       break;
+    case "stream_reset":
+      resetStreamingAssistant(event.discardTextLength);
+      break;
+    case "provider_reconnecting": {
+      const seconds = Math.max(1, Math.round((event.delayMs ?? 3_000) / 1_000));
+      elements.runStatus.textContent = `网络连接已中断，${seconds} 秒后第 ${event.attempt}/${event.maxAttempts} 次重连…`;
+      break;
+    }
     case "context_updated":
       currentContext = event.context;
       updateContextControl();
       break;
+    case "recovery_unavailable":
+      recoveryUnavailable = true;
+      setRecoveryNotice(
+        "本地恢复暂不可用，当前对话仍可继续但闪退后可能无法恢复。",
+        { kind: "warning" },
+      );
+      break;
+    case "recovery_available":
+      recoveryUnavailable = false;
+      if (!runner.running) {
+        setRecoveryNotice("本地恢复已恢复，可继续防护闪退。", { clearable: true, kind: "info" });
+      }
+      break;
     case "tool_pending":
+      streamingAssistantStepTextLength = 0;
       updateActivity(
         event,
         "pending",
@@ -962,6 +1470,9 @@ function handleRunnerEvent(event) {
           ? approvalMode === "auto" ? "将执行" : "待审批"
           : "待读取",
       );
+      break;
+    case "model_step_boundary":
+      streamingAssistantStepTextLength = 0;
       break;
     case "tool_running":
       updateActivity(event, "running", "执行中");
@@ -981,19 +1492,44 @@ function handleRunnerEvent(event) {
       elements.runStatus.textContent = "";
       break;
     case "assistant_message":
+      elements.runStatus.textContent = "";
       finishAssistantMessage(event.message);
       break;
     case "run_error":
       currentRunOutcome = "error";
       streamingAssistantId = null;
+      streamingAssistantStepTextLength = 0;
+      elements.runStatus.textContent = "";
       renderConversation();
+      if (event.recoverableSession) {
+        const recoveryDisabled = recoveryUnavailable || recoveryDisabledForBinding;
+        setRecoveryNotice(
+          recoveryDisabled
+            ? "连接中断，当前对话仍在内存，但本地恢复暂不可用；闪退后可能无法恢复。"
+            : "连接中断，当前对话已保留。不会自动重发模型请求或 Excel 修改，请确认后手动继续。",
+          { clearable: !recoveryDisabled, kind: "warning" },
+        );
+        startRecoveryHeartbeat();
+      } else {
+        recoveryUnavailable = false;
+        stopRecoveryHeartbeat();
+      }
       appendMessage("error", event.error instanceof Error ? event.error.message : "任务失败。" );
       break;
     case "run_stopped":
       currentRunOutcome = "stopped";
       streamingAssistantId = null;
+      streamingAssistantStepTextLength = 0;
+      elements.runStatus.textContent = "";
       renderConversation();
-      appendMessage("error", "任务已停止。" );
+      stopRecoveryHeartbeat();
+      recoveryUnavailable = false;
+      setRecoveryNotice("");
+      if (clearingRecoverySession || suppressNextStoppedNotice) {
+        suppressNextStoppedNotice = false;
+      } else {
+        appendMessage("error", "任务已停止。" );
+      }
       break;
     case "run_finished":
       history.finishOperation(currentRunOutcome);
@@ -1001,6 +1537,16 @@ function handleRunnerEvent(event) {
       renderHistoricalState();
       elements.approval.hidden = true;
       setBusy(false);
+      if (runner.sessionId) {
+        startRecoveryHeartbeat();
+        if (currentRunOutcome === "success" && !recoveryUnavailable && !recoveryDisabledForBinding) {
+          setRecoveryNotice("当前会话可继续使用。", { clearable: true, kind: "info" });
+        } else if (currentRunOutcome === "success" && recoveryDisabledForBinding) {
+          setRecoveryNotice(RECOVERY_BINDING_UNAVAILABLE_MESSAGE, { kind: "warning" });
+        }
+      } else {
+        stopRecoveryHeartbeat();
+      }
       elements.promptInput.focus();
       break;
   }
@@ -1009,87 +1555,57 @@ function handleRunnerEvent(event) {
 const runner = new AgentRunner({
   api,
   executeTool: safeExecuteTool,
+  captureToolPreview,
   requestApproval,
   onEvent: handleRunnerEvent,
 });
 
-function showAttachmentError(message) {
-  elements.attachmentError.textContent = message;
-  elements.attachmentError.hidden = !message;
-}
+async function clearRecoverySession() {
+  const sessionId = runner.sessionId;
+  if (!sessionId) return;
 
-function renderAttachments() {
-  elements.attachmentList.replaceChildren();
-  for (const attachment of attachments) {
-    const item = document.createElement("div");
-    item.className = "attachment-item";
-    item.title = `${attachment.name} · ${formatAttachmentSize(attachment.byteLength)}`;
-    const image = document.createElement("img");
-    image.src = attachment.dataUrl;
-    image.alt = attachment.name;
-    const remove = document.createElement("button");
-    remove.type = "button";
-    remove.className = "attachment-remove";
-    remove.title = `删除 ${attachment.name}`;
-    remove.setAttribute("aria-label", `删除 ${attachment.name}`);
-    remove.append(createIcon("/assets/fluent/dismiss.svg"));
-    remove.addEventListener("click", () => {
-      attachments = attachments.filter((candidate) => candidate.id !== attachment.id);
-      renderAttachments();
-      updateSendState();
-    });
-    item.append(image, remove);
-    elements.attachmentList.append(item);
-  }
-  elements.attachmentList.hidden = attachments.length === 0;
-}
+  const confirmed = await showConfirmation({
+    title: "清空恢复会话？",
+    message: "这会停止当前任务并清除本机上的短期恢复记录，无法恢复。已写入工作簿的内容不会被回滚。",
+    confirmText: "清空会话",
+    cancelText: "保留",
+  });
+  if (!confirmed) return;
 
-async function addSelectedImages(fileList) {
-  showAttachmentError("");
-  const files = [...fileList];
-  if (attachments.length + files.length > MAX_ATTACHMENTS) {
-    showAttachmentError(`每条消息最多添加 ${MAX_ATTACHMENTS} 张图片。`);
-    return;
-  }
-  elements.imageButton.disabled = true;
+  clearingRecoverySession = true;
+  if (runner.running) suppressNextStoppedNotice = true;
+  stopRecoveryHeartbeat();
   try {
-    for (const file of files) {
-      attachments.push(await prepareImageFile(file));
-      renderAttachments();
-      updateSendState();
+    stopRecoveryHeartbeat();
+    await runner.resetSession();
+    recoveryUnavailable = false;
+    setRecoveryNotice("");
+    try {
+      await api.clearConversation({ sessionId });
+    } catch {
+      // cancel already requests the same cleanup; a missing recovery record is harmless.
     }
-  } catch (error) {
-    showAttachmentError(
-      error instanceof AttachmentError || error instanceof Error
-        ? error.message
-        : "无法添加图片。",
-    );
+    resetRecoveredPresentation();
+    renderHistoricalState();
+    setRecoveryNotice("当前恢复会话已清除。", { kind: "info" });
   } finally {
-    elements.imageButton.disabled = runner.running;
-    elements.imageInput.value = "";
+    clearingRecoverySession = false;
   }
 }
 
 async function submitPrompt() {
   const message = elements.promptInput.value.trim();
-  if ((message === "" && attachments.length === 0) || runner.running || !configState) return;
+  if (message === "" || runner.running || approvalModeSaving || !configState) return;
   if (!(await guardHistoricalConversation())) return;
 
-  const outgoingAttachments = attachments.map(({ name, mimeType, dataUrl }) => ({
-    name,
-    mimeType,
-    dataUrl,
-  }));
   elements.promptInput.value = "";
-  attachments = [];
-  renderAttachments();
   resizePromptInput();
   updateSendState();
   try {
     await runner.run(message, {
-      attachments: outgoingAttachments,
       model: selectedModel,
       reasoningEffort: selectedReasoningEffort,
+      workbookBinding: workbookBinding ?? undefined,
     });
   } catch {
     // Runner events already render a safe error.
@@ -1119,9 +1635,20 @@ function renderSettingsProtocols(preferredProtocol = "openai-responses") {
   elements.apiProtocol.value = protocols.some((protocol) => protocol.id === preferredProtocol)
     ? preferredProtocol
     : protocols[0]?.id ?? preferredProtocol;
+  renderProtocolModelExamples();
 }
 
-function renderSettingsEfforts(preferredEffort = null) {
+function renderProtocolModelExamples() {
+  elements.protocolModelList.replaceChildren();
+  for (const model of PROTOCOL_MODEL_EXAMPLES[elements.apiProtocol.value] ?? []) {
+    const chip = document.createElement("span");
+    chip.className = "protocol-model-chip";
+    chip.textContent = model;
+    elements.protocolModelList.append(chip);
+  }
+}
+
+function renderSettingsEfforts() {
   const entry = settingsDiscoveredModels.find((model) => model.id === elements.settingsModel.value);
   elements.settingsEffort.replaceChildren();
   if (!entry) {
@@ -1133,22 +1660,37 @@ function renderSettingsEfforts(preferredEffort = null) {
     elements.mappingNote.textContent = "";
     return;
   }
-  for (const effort of entry.reasoningEfforts) {
+  if (entry.reasoningMode === "provider-default") {
     const option = document.createElement("option");
-    option.value = effort;
-    option.textContent = effort;
+    option.value = "";
+    option.textContent = "自动（提供方默认）";
     elements.settingsEffort.append(option);
+  } else {
+    for (const effort of entry.reasoningEfforts) {
+      const option = document.createElement("option");
+      option.value = effort;
+      option.textContent = effort;
+      elements.settingsEffort.append(option);
+    }
   }
-  elements.settingsEffort.disabled = false;
-  elements.settingsEffort.value = entry.reasoningEfforts.includes(preferredEffort)
-    ? preferredEffort
-    : entry.reasoningEfforts[0] ?? "";
-  elements.mappingNote.textContent = entry.reasoningSource === "provider"
-    ? "思考等级来自提供方模型元数据。"
-    : "提供方未声明思考等级，当前按模型 ID 保守映射。";
+  elements.settingsEffort.disabled = true;
+  elements.settingsEffort.value = entry.defaultReasoningEffort ?? "";
+  const contextNote = entry.contextWindow
+    ? entry.contextSource === "official"
+      ? "上下文长度来自官方模型目录。"
+      : "上下文长度来自提供方模型元数据。"
+    : "";
+  const reasoningNote = entry.reasoningMode === "provider-default"
+    ? "支持思考模式，等级由提供方自动决定。"
+    : entry.reasoningSource === "official"
+      ? "思考等级来自官方模型目录，不能手动修改。"
+      : entry.reasoningSource === "provider"
+        ? "思考等级来自提供方模型元数据，不能手动修改。"
+        : "当前按模型 ID 保守映射，不能手动修改。";
+  elements.mappingNote.textContent = [contextNote, reasoningNote].filter(Boolean).join(" ");
 }
 
-function renderSettingsModels(preferredModel = null, preferredEffort = null) {
+function renderSettingsModels(preferredModel = null) {
   elements.settingsModel.replaceChildren();
   if (settingsDiscoveredModels.length === 0) {
     const option = document.createElement("option");
@@ -1169,7 +1711,14 @@ function renderSettingsModels(preferredModel = null, preferredEffort = null) {
   elements.settingsModel.value = settingsDiscoveredModels.some((model) => model.id === preferredModel)
     ? preferredModel
     : settingsDiscoveredModels[0].id;
-  renderSettingsEfforts(preferredEffort);
+  renderSettingsEfforts();
+}
+
+function applySettingsModelContextWindow() {
+  const entry = settingsDiscoveredModels.find((model) => model.id === elements.settingsModel.value);
+  if (Number.isSafeInteger(entry?.contextWindow)) {
+    elements.contextWindow.value = String(entry.contextWindow);
+  }
 }
 
 function toggleCustomSettings() {
@@ -1194,7 +1743,7 @@ function populateSettings() {
   settingsDiscoveredModels = Array.isArray(configState.settings.models)
     ? configState.settings.models.map((model) => ({ ...model }))
     : [];
-  renderSettingsModels(configState.settings.model, configState.settings.reasoningEffort);
+  renderSettingsModels(configState.settings.model);
   toggleCustomSettings();
   setSettingsMessage("");
 }
@@ -1243,14 +1792,19 @@ async function discoverModels(useSystemConfig) {
         configState.models.unshift({
           id: configState.config.model,
           reasoningEfforts: configState.config.reasoningEfforts,
+          reasoningMode: configState.config.reasoningMode,
           reasoningSource: configState.config.reasoningSource,
+          defaultReasoningEffort: configState.config.defaultReasoningEffort,
+          contextWindow: configState.config.contextWindow,
+          contextSource: configState.config.contextSource,
         });
       }
       updateComposerControls();
       setSettingsMessage(`已获取 ${result.models.length} 个模型，可在对话框底部切换。`, "success");
     } else {
       settingsDiscoveredModels = result.models;
-      renderSettingsModels(configState.settings.model, configState.settings.reasoningEffort);
+      renderSettingsModels(configState.settings.model);
+      applySettingsModelContextWindow();
       setSettingsMessage(`已获取 ${result.models.length} 个模型。`, "success");
     }
   } catch (error) {
@@ -1277,15 +1831,21 @@ async function saveSettings(event) {
             apiKey: elements.apiKey.value,
             model: elements.settingsModel.value,
             contextWindow: Number(elements.contextWindow.value),
-            reasoningEffort: elements.settingsEffort.value,
             maxSteps: Number(elements.maxSteps.value),
           },
     );
     await runner.resetSession();
+    recoveryUnavailable = false;
+    stopRecoveryHeartbeat();
+    setRecoveryNotice(
+      recoveryDisabledForBinding ? RECOVERY_BINDING_UNAVAILABLE_MESSAGE : "",
+      recoveryDisabledForBinding ? { kind: "warning" } : {},
+    );
     applyConfigState(payload, { preserveSelection: false });
     setSettingsMessage("配置已更新。", "success");
     closeSettings();
     elements.runStatus.textContent = "配置已更新，新消息将使用当前选择";
+    void refreshProviderConnectivity();
   } catch (error) {
     setSettingsMessage(error instanceof Error ? error.message : "保存配置失败。", "error");
   } finally {
@@ -1301,28 +1861,48 @@ function seedPreviewState() {
   history.startOperation({ label: "整理 Sheet1 的验收数据" });
   const samples = [
     {
-      call: { callId: "preview-read" },
+      call: { callId: "preview-read", name: "read_range" },
       tool: { label: "读取指定范围" },
       arguments: { worksheet: "Sheet1", address: "A1:D5" },
-      output: { ok: true, target: "Sheet1!A1:D5", rowCount: 5, columnCount: 4 },
+      output: {
+        ok: true,
+        target: "Sheet1!A1:D5",
+        worksheet: "Sheet1",
+        rowCount: 5,
+        columnCount: 4,
+        values: [
+          ["月份", "销售额", "成本", "利润"],
+          ["1月", 120, 80, 40],
+          ["2月", 150, 90, 60],
+          ["3月", 180, 100, 80],
+          ["4月", 210, 120, 90],
+        ],
+      },
     },
     {
-      call: { callId: "preview-table" },
+      call: { callId: "preview-table", name: "create_table" },
       tool: { label: "创建 Excel 表格" },
       arguments: { worksheet: "Sheet1", address: "A1:C5" },
       output: { ok: true, target: "Sheet1!A1:C5", table: "AcceptanceTable" },
     },
     {
-      call: { callId: "preview-chart" },
+      call: { callId: "preview-chart", name: "create_chart" },
       tool: { label: "创建图表" },
       arguments: { worksheet: "Sheet1", sourceAddress: "A1:C4" },
       output: { ok: true, target: "Sheet1!A1:C4", chart: "Chart 1" },
     },
   ];
   for (const sample of samples) {
+    sample.preview = historyPreviewFallback(sample);
     updateActivity(sample, "success", "完成", summarizeToolOutput(sample.output));
   }
   history.finishOperation("success");
+  history.addMessage("notice", "无需审批：即将执行“创建 Excel 表格”（Sheet1!A1:C5）。", {
+    timelineIndex: history.latestIndex,
+  });
+  history.addMessage("notice", "无需审批：即将执行“创建图表”（Sheet1!A1:C4）。", {
+    timelineIndex: history.latestIndex,
+  });
   history.addMessage(
     "assistant",
     "已整理 Sheet1!A1:D5，并创建表格 AcceptanceTable 与图表 Chart 1。",
@@ -1361,6 +1941,7 @@ function previewConfigState() {
       reasoningEffort: "max",
       protocol: "openai-responses",
       maxSteps: 100,
+      approvalMode: "required",
       models: [],
     },
   };
@@ -1370,8 +1951,10 @@ async function initializePreview() {
   setWorkbookIdentity("销售分析-Sheet1");
   try {
     await refreshConfig();
+    await refreshProviderConnectivity();
   } catch {
     applyConfigState(previewConfigState(), { preserveSelection: false });
+    setProviderConnectivityState("ready");
   }
   seedPreviewState();
   setBusy(false);
@@ -1389,31 +1972,42 @@ async function initializeExcel(info) {
     elements.promptInput.disabled = true;
     return;
   }
-  await Promise.allSettled([refreshConfig(), refreshWorkbookIdentity(), registerWorkbookEvents()]);
+  const [configResult, workbookResult] = await Promise.allSettled([
+    refreshConfig(),
+    refreshWorkbookIdentity(),
+    registerWorkbookEvents(),
+  ]);
+  if (configResult.status === "fulfilled") await refreshProviderConnectivity();
+  if (workbookResult.status === "fulfilled") {
+    await prepareWorkbookBinding();
+    await restoreConversationRecovery();
+  }
   setBusy(false);
   elements.promptInput.focus();
+}
+
+async function initializeLegacy() {
+  try {
+    await Promise.all([refreshConfig(), refreshWorkbookIdentity()]);
+    await refreshProviderConnectivity();
+    await registerWorkbookEvents();
+    await prepareWorkbookBinding();
+    await restoreConversationRecovery();
+    configStatusTitle = `${configStatusTitle} · XLS 原生引擎`;
+    updateWorkbookStatusTitle();
+    setBusy(false);
+    elements.promptInput.focus();
+  } catch (error) {
+    elements.statusDot.className = "status-dot is-error";
+    setWorkbookIdentity("无法连接 XLS 原生引擎");
+    elements.promptInput.disabled = true;
+    elements.runStatus.textContent = error instanceof Error ? error.message : "原生 XLS 初始化失败。";
+  }
 }
 
 elements.promptInput.addEventListener("input", () => {
   resizePromptInput();
   updateSendState();
-});
-elements.promptInput.addEventListener("paste", (event) => {
-  const files = [...(event.clipboardData?.files ?? [])].filter((file) =>
-    /^(image\/(?:png|jpeg|webp))$/i.test(file.type),
-  );
-  if (files.length === 0) return;
-  event.preventDefault();
-  const pastedText = event.clipboardData?.getData("text/plain") ?? "";
-  if (pastedText !== "") {
-    const start = elements.promptInput.selectionStart ?? elements.promptInput.value.length;
-    const end = elements.promptInput.selectionEnd ?? start;
-    elements.promptInput.value = `${elements.promptInput.value.slice(0, start)}${pastedText}${elements.promptInput.value.slice(end)}`;
-    const caret = start + pastedText.length;
-    elements.promptInput.setSelectionRange(caret, caret);
-    elements.promptInput.dispatchEvent(new Event("input", { bubbles: true }));
-  }
-  void addSelectedImages(files);
 });
 elements.promptInput.addEventListener("keydown", (event) => {
   if (event.key === "Enter" && !event.shiftKey) {
@@ -1425,8 +2019,6 @@ elements.sendButton.addEventListener("click", () => {
   if (runner.running) void runner.stop();
   else void submitPrompt();
 });
-elements.imageButton.addEventListener("click", () => elements.imageInput.click());
-elements.imageInput.addEventListener("change", () => void addSelectedImages(elements.imageInput.files));
 elements.easterTrigger.addEventListener("click", () => {
   const active = elements.easterFooter.classList.toggle("is-active");
   elements.easterTrigger.setAttribute("aria-pressed", String(active));
@@ -1438,15 +2030,16 @@ elements.modeButton.addEventListener("click", () => toggleMenu(elements.modeMenu
 elements.modeMenu.addEventListener("click", (event) => {
   const option = event.target.closest("[data-mode]");
   if (!option) return;
-  setApprovalMode(option.dataset.mode);
-  closeMenus();
+  void persistApprovalMode(option.dataset.mode);
 });
 elements.activityToggle.addEventListener("click", () => {
   const collapsed = elements.activity.classList.toggle("is-collapsed");
   elements.activityToggle.setAttribute("aria-expanded", String(!collapsed));
 });
 elements.historyLatestButton.addEventListener("click", goToLatestHistory);
+elements.clearRecoveryButton.addEventListener("click", () => void clearRecoverySession());
 elements.settingsButton.addEventListener("click", openSettings);
+elements.apiProtocol.addEventListener("change", renderProtocolModelExamples);
 elements.settingsBackButton.addEventListener("click", closeSettings);
 elements.settingsCancelButton.addEventListener("click", closeSettings);
 elements.useSystemConfig.addEventListener("change", toggleCustomSettings);
@@ -1457,7 +2050,10 @@ elements.apiProtocol.addEventListener("change", () => {
 });
 elements.fetchSystemModelsButton.addEventListener("click", () => void discoverModels(true));
 elements.fetchModelsButton.addEventListener("click", () => void discoverModels(false));
-elements.settingsModel.addEventListener("change", () => renderSettingsEfforts());
+elements.settingsModel.addEventListener("change", () => {
+  renderSettingsEfforts();
+  applySettingsModelContextWindow();
+});
 elements.settingsForm.addEventListener("submit", saveSettings);
 elements.confirmCancelButton.addEventListener("click", () => resolveConfirmation(false));
 elements.confirmAcceptButton.addEventListener("click", () => resolveConfirmation(true));
@@ -1470,13 +2066,16 @@ document.addEventListener("keydown", (event) => {
     else closeMenus();
   }
 });
+globalThis.addEventListener?.("pagehide", stopRecoveryHeartbeat);
 
 setApprovalMode("required");
 resizePromptInput();
 renderConversation();
 updateSendState();
 
-if (previewMode) {
+if (legacyMode) {
+  void initializeLegacy();
+} else if (previewMode) {
   void initializePreview();
 } else if (globalThis.Office?.onReady) {
   Office.onReady((info) => void initializeExcel(info));

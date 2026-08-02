@@ -2,6 +2,28 @@
 
 这里记录 ChatExcel 的重要版本变化。
 
+## [0.0.2] - 2026-08-02
+
+### 新增
+
+- 面向既有 `.xls` 工作簿的原生伴随路径。Windows 启动器只打开原始旧格式路径，让 Excel 保持文件格式控制权，并通过一次性、仅当前 Windows 用户可访问的管道执行已批准工具。
+- 使用 DPAPI 加密的当前工作簿崩溃恢复缓存，配合 30 分钟任务窗格存活租约。恢复绝不会自动重发模型请求或重放 Excel 操作。
+- 有界的本地服务恢复守护器：仅在 ChatExcel 受管服务异常退出或持续不健康后重启它。
+- 操作历史步骤的只读可视化预览，范围或图表截图受尺寸限制，无法截图时回退为网格；预览不会保存或修改工作簿。
+
+### 变更
+
+- Responses、Chat Completions、Anthropic Messages 和 Gemini 中可关联的模型工具失败会返回结构化错误，让 Agent 在不触碰工作簿的前提下纠正无效工具名、参数和范围。
+- A1 地址现在支持整行和整列；紧凑任务窗格只接收文本任务。
+- 启动器打包从 npm 元数据读取发行版本，生成 `ChatExcel-Launcher-0.0.2-win-x64.zip` 及匹配的 SHA-256 文件。
+
+### 已知限制
+
+- 原生 `.xls` 伴随路径需要桌面版 Microsoft Excel 和 WebView2；兼容模式下的表格和图表行为须在目标工作簿中验收后再用于生产操作。
+- 真实桌面 Excel 的长时间流式取消仍需要可控提供方的专用验收。
+
+## [0.0.1] - 2026-08-01
+
 ## [0.0.1] - 2026-08-01
 
 ChatExcel 首个 GitHub 发行版。
@@ -28,3 +50,4 @@ ChatExcel 首个 GitHub 发行版。
 - 当前尚未选择许可证；在组织外分发前请补充许可证。
 
 [0.0.1]: https://github.com/aEboli/ChatExcel/releases/tag/v0.0.1
+[0.0.2]: https://github.com/aEboli/ChatExcel/releases/tag/v0.0.2

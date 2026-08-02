@@ -1,5 +1,6 @@
 export const MAX_READ_CELLS = 2_000;
 export const MAX_WRITE_CELLS = 5_000;
+export const MAX_NUMBER_FORMAT_CELLS = MAX_WRITE_CELLS;
 
 export class ToolValidationError extends Error {
   constructor(code, message, path = "$") {
@@ -20,7 +21,7 @@ const rangeAddress = {
   type: "string",
   minLength: 2,
   maxLength: 32,
-  description: "不含工作表名称的 A1 单元格或矩形范围，例如 A1:D20。",
+  description: "不含工作表名称的 A1 单元格、矩形、整列或整行范围，例如 A1:D20、N:R、1:3。",
 };
 
 const scalarValue = { type: ["string", "number", "boolean", "null"] };
@@ -120,7 +121,7 @@ export const EXCEL_TOOLS = Object.freeze([
     name: "set_number_format",
     label: "设置数字格式",
     mode: "modify",
-    description: "给目标范围的所有单元格设置同一个 Excel 数字格式代码。",
+    description: `给目标范围的所有单元格设置同一个 Excel 数字格式代码；最多 ${MAX_NUMBER_FORMAT_CELLS} 个单元格，超限时缩小或分块执行。`,
     parameters: objectSchema({
       worksheet: nullableWorksheet,
       address: rangeAddress,
@@ -322,9 +323,17 @@ function validateWorksheetName(name, path) {
   }
 }
 
+const cellReference = String.raw`\$?[A-Z]{1,3}\$?[1-9]\d{0,6}`;
+const columnReference = String.raw`\$?[A-Z]{1,3}`;
+const rowReference = String.raw`\$?[1-9]\d{0,6}`;
+const rangeAddressPattern = new RegExp(
+  `^(?:${cellReference}(?::${cellReference})?|${columnReference}:${columnReference}|${rowReference}:${rowReference})$`,
+  "i",
+);
+
 function validateAddress(address, path) {
-  if (!/^\$?[A-Z]{1,3}\$?\d{1,7}(?::\$?[A-Z]{1,3}\$?\d{1,7})?$/i.test(address)) {
-    throw new ToolValidationError("RANGE_ADDRESS_INVALID", `${path} 必须是矩形 A1 范围。`, path);
+  if (!rangeAddressPattern.test(address)) {
+    throw new ToolValidationError("RANGE_ADDRESS_INVALID", `${path} 必须是有效 A1 范围。`, path);
   }
 }
 

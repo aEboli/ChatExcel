@@ -17,6 +17,21 @@ export function parseRegistryExcelPath(output) {
   return match?.[1] ?? null;
 }
 
+export function parseSideloadArguments(args) {
+  if (args.length === 0) return { workbookPath: null };
+  if (args.length !== 2 || args[0] !== "--workbook") {
+    throw new Error("侧载命令只接受 --workbook <path>。");
+  }
+  const workbookPath = path.resolve(args[1]);
+  if (!fs.existsSync(workbookPath) || !fs.statSync(workbookPath).isFile()) {
+    throw new Error("找不到要打开的现代 Excel 工作簿。");
+  }
+  if (!/[.](?:xlsx|xlsm|xlsb)$/i.test(workbookPath)) {
+    throw new Error("Office 加载项路径只支持 .xlsx、.xlsm 和 .xlsb。");
+  }
+  return { workbookPath };
+}
+
 function queryRegistryExcelPath(key) {
   try {
     const output = execFileSync("reg.exe", ["query", key, "/ve"], {
@@ -55,18 +70,24 @@ async function main() {
     throw new Error("当前侧载脚本只支持 Windows Microsoft Excel。");
   }
 
+  const { workbookPath } = parseSideloadArguments(process.argv.slice(2));
   await registerAddIn(manifestPath);
-  const manifest = await OfficeAddinManifest.readManifestFile(manifestPath);
-  const sideloadFile = await generateSideloadFile(OfficeApp.Excel, manifest);
+  let targetFile = workbookPath;
+  if (!targetFile) {
+    const manifest = await OfficeAddinManifest.readManifestFile(manifestPath);
+    targetFile = await generateSideloadFile(OfficeApp.Excel, manifest);
+  }
   const excelPath = findExcelExecutable();
-  const excel = spawn(excelPath, ["/x", sideloadFile], {
+  const excel = spawn(excelPath, ["/x", targetFile], {
     detached: true,
     stdio: "ignore",
     windowsHide: false,
   });
   excel.unref();
 
-  console.log(`已注册加载项并启动 Microsoft Excel：${sideloadFile}`);
+  console.log(workbookPath
+    ? "已注册加载项并启动指定的现代 Excel 工作簿。"
+    : `已注册加载项并启动 Microsoft Excel：${targetFile}`);
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

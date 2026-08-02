@@ -5,6 +5,7 @@ import {
   parseDataUrl,
   protocolAuthHeaders,
 } from "./protocols.js";
+import { resolveOfficialModelCapabilities } from "./model-capability-catalog.js";
 import { readProviderResponse, streamingEndpoint } from "./provider-stream.js";
 import { getResponsesToolDefinitions } from "../shared/excel-tools.js";
 
@@ -13,10 +14,25 @@ export const AGENT_INSTRUCTIONS = `你是当前 Microsoft Excel 工作簿内的�
 先读取必要的工作簿上下文，再进行精确、最小范围的操作。值、公式、格式、表格、图表、排序和工作表变更都必须使用对应工具。
 任务窗格会按照用户当前选择的审批模式处理修改工具；不得规避、合并隐藏或诱导改变该模式。
 公式使用 Excel A1 引用和标准函数名。遇到范围、工作表或参数不明确时，先使用读取工具确认。
+工具返回失败时，先根据错误代码和参数路径自行修正；范围过大时缩小或分块继续。用户明确拒绝或停止时不得换一种调用方式绕过。
 最终用简体中文简洁说明实际完成结果；如果用户拒绝或工具失败，如实说明。`;
 
 const ANTHROPIC_VERSION = "2023-06-01";
 const DEFAULT_ANTHROPIC_MAX_TOKENS = 8_192;
+const DEFAULT_RECONNECT_DELAY_MS = 3_000;
+const DEFAULT_MAX_RECONNECT_ATTEMPTS = 10;
+const RETRYABLE_TRANSPORT_CODES = new Set([
+  "ECONNABORTED",
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "EHOSTUNREACH",
+  "EAI_AGAIN",
+  "ENETDOWN",
+  "ENETUNREACH",
+  "ETIMEDOUT",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_SOCKET",
+]);
 
 export class ProviderError extends Error {
   constructor(code, message, { statusCode = 502, providerStatus = null, requestId = null } = {}) {
@@ -66,6 +82,47 @@ function combineAbortSignal(externalSignal, timeoutMs) {
       externalSignal?.removeEventListener("abort", abortFromExternal);
     },
   };
+}
+
+function interruptionError(externalSignal, abort) {
+  if (externalSignal?.aborted) {
+    return new ProviderError("AGENT_CANCELLED", "当前 Agent 请求已停止。", { statusCode: 499 });
+  }
+  if (abort.didTimeOut()) {
+    return new ProviderError("PROVIDER_TIMEOUT", "模型提供方响应超时。", { statusCode: 504 });
+  }
+  return null;
+}
+
+function isRetryableTransportError(error) {
+  if (error?.code === "PROVIDER_STREAM_DISCONNECTED") return true;
+  const code = error?.cause?.code ?? error?.code;
+  if (RETRYABLE_TRANSPORT_CODES.has(code)) return true;
+  if (error?.name !== "TypeError") return false;
+  return /^(fetch failed|failed to fetch|network error)$/i.test(String(error.message).trim());
+}
+
+function validateProviderToken(token) {
+  if (typeof token !== "string" || token === "" || /[\r\n\0]/.test(token)) {
+    throw new ProviderError("PROVIDER_AUTH_INVALID", "当前模型提供方令牌格式无效。", { statusCode: 400 });
+  }
+  return token;
+}
+
+function waitForReconnect(delayMs, signal) {
+  if (delayMs === 0 || signal?.aborted) return Promise.resolve();
+  return new Promise((resolve) => {
+    let timeout;
+    const finish = () => {
+      clearTimeout(timeout);
+      signal?.removeEventListener("abort", finish);
+      resolve();
+    };
+    timeout = setTimeout(finish, delayMs);
+    timeout.unref?.();
+    if (signal?.aborted) finish();
+    else signal?.addEventListener("abort", finish, { once: true });
+  });
 }
 
 function resolveProtocol(config) {
@@ -472,6 +529,11 @@ function runtimeMetadata(config) {
 }
 
 function requestBodyFor(protocol, config, input, toolDefinitions, { stream = false } = {}) {
+  const officialCapabilities = resolveOfficialModelCapabilities(protocol, config.model);
+  const usesDeepSeekThinkingToggle = officialCapabilities?.thinkingToggle === true;
+  const deepSeekReasoningEffort = config.reasoningEffort
+    ?? officialCapabilities?.defaultReasoningEffort
+    ?? "high";
   if (protocol === "openai-responses") {
     const body = {
       model: config.model,
@@ -483,7 +545,9 @@ function requestBodyFor(protocol, config, input, toolDefinitions, { stream = fal
       parallel_tool_calls: false,
     };
     if (stream) body.stream = true;
-    if (config.reasoningEffort && config.reasoningEffort !== "none") {
+    if (usesDeepSeekThinkingToggle) {
+      body.reasoning = { effort: deepSeekReasoningEffort };
+    } else if (config.reasoningEffort && config.reasoningEffort !== "none") {
       body.reasoning = { effort: config.reasoningEffort, summary: "auto" };
     }
     if (config.verbosity) body.text = { verbosity: config.verbosity };
@@ -500,7 +564,12 @@ function requestBodyFor(protocol, config, input, toolDefinitions, { stream = fal
       body.stream = true;
       body.stream_options = { include_usage: true };
     }
-    if (config.reasoningEffort && config.reasoningEffort !== "none") body.reasoning_effort = config.reasoningEffort;
+    if (usesDeepSeekThinkingToggle) {
+      body.thinking = { type: deepSeekReasoningEffort === "none" ? "disabled" : "enabled" };
+      if (deepSeekReasoningEffort !== "none") body.reasoning_effort = deepSeekReasoningEffort;
+    } else if (config.reasoningEffort && config.reasoningEffort !== "none") {
+      body.reasoning_effort = config.reasoningEffort;
+    }
     return body;
   }
   if (protocol === "anthropic-messages") {
@@ -543,12 +612,21 @@ export function createProviderClient({
   fetchImpl = globalThis.fetch,
   timeoutMs = 300_000,
   toolDefinitions = getResponsesToolDefinitions(),
+  reconnectDelayMs = DEFAULT_RECONNECT_DELAY_MS,
+  maxReconnectAttempts = DEFAULT_MAX_RECONNECT_ATTEMPTS,
 } = {}) {
   if (typeof fetchImpl !== "function") throw new TypeError("fetchImpl 必须是函数。" );
+  if (!Number.isSafeInteger(reconnectDelayMs) || reconnectDelayMs < 0) {
+    throw new TypeError("reconnectDelayMs 必须是非负整数。" );
+  }
+  if (!Number.isSafeInteger(maxReconnectAttempts) || maxReconnectAttempts < 0) {
+    throw new TypeError("maxReconnectAttempts 必须是非负整数。" );
+  }
   return {
     async create({ input, signal, options, onEvent } = {}) {
       if (!Array.isArray(input)) throw new TypeError("Provider input 必须是数组。" );
       const config = await configLoader(options);
+      const token = validateProviderToken(config.token);
       const protocol = resolveProtocol(config);
       const endpoint = config.endpoint ?? config.responsesUrl;
       if (typeof endpoint !== "string" || endpoint === "") {
@@ -557,80 +635,119 @@ export function createProviderClient({
       const streaming = typeof onEvent === "function";
       const requestEndpoint = streaming ? streamingEndpoint(protocol, endpoint) : endpoint;
       const abort = combineAbortSignal(signal, timeoutMs);
-      let response;
       try {
-        response = await fetchImpl(requestEndpoint, {
+        const request = {
           method: "POST",
           headers: {
-            ...protocolAuthHeaders(protocol, config.token),
+            ...protocolAuthHeaders(protocol, token),
             "Content-Type": "application/json",
             ...(streaming ? { Accept: "text/event-stream" } : {}),
           },
           body: JSON.stringify(requestBodyFor(protocol, config, input, toolDefinitions, { stream: streaming })),
           signal: abort.signal,
-        });
-      } catch (error) {
-        abort.cleanup();
-        if (signal?.aborted) {
-          throw new ProviderError("AGENT_CANCELLED", "当前 Agent 请求已停止。", { statusCode: 499 });
-        }
-        if (abort.didTimeOut()) {
-          throw new ProviderError("PROVIDER_TIMEOUT", "模型提供方响应超时。", { statusCode: 504 });
-        }
-        throw new ProviderError("PROVIDER_UNAVAILABLE", "无法连接当前模型提供方。", { statusCode: 502 });
-      }
+        };
+        let reconnectAttempt = 0;
+        const reconnect = async (discardTextLength) => {
+          const stopped = interruptionError(signal, abort);
+          if (stopped) throw stopped;
+          if (discardTextLength > 0) {
+            onEvent?.({ type: "stream_reset", discardTextLength });
+          }
+          if (reconnectAttempt >= maxReconnectAttempts) {
+            throw new ProviderError("PROVIDER_UNAVAILABLE", "无法连接当前模型提供方。", { statusCode: 502 });
+          }
 
-      const requestId = response.headers.get("x-request-id");
-      if (!response.ok) {
-        const summary = sanitizeSummary(await response.text(), config.token);
-        abort.cleanup();
-        throw new ProviderError(
-          "PROVIDER_HTTP_ERROR",
-          summary ? `模型提供方返回 HTTP ${response.status}：${summary}` : `模型提供方返回 HTTP ${response.status}。`,
-          { statusCode: 502, providerStatus: response.status, requestId },
-        );
-      }
-      let payload;
-      try {
-        payload = await readProviderResponse(response, {
-          protocol,
-          onEvent,
-          signal: abort.signal,
-        });
-      } catch (error) {
-        if (signal?.aborted) {
-          abort.cleanup();
-          throw new ProviderError("AGENT_CANCELLED", "当前 Agent 请求已停止。", { statusCode: 499 });
+          reconnectAttempt += 1;
+          onEvent?.({
+            type: "provider_reconnecting",
+            attempt: reconnectAttempt,
+            maxAttempts: maxReconnectAttempts,
+            delayMs: reconnectDelayMs,
+          });
+          await waitForReconnect(reconnectDelayMs, abort.signal);
+          const interrupted = interruptionError(signal, abort);
+          if (interrupted) throw interrupted;
+        };
+
+        while (true) {
+          let response;
+          try {
+            response = await fetchImpl(requestEndpoint, request);
+          } catch (error) {
+            const interrupted = interruptionError(signal, abort);
+            if (interrupted) throw interrupted;
+            if (!isRetryableTransportError(error)) {
+              throw new ProviderError("PROVIDER_UNAVAILABLE", "无法连接当前模型提供方。", { statusCode: 502 });
+            }
+            await reconnect(false);
+            continue;
+          }
+
+          const requestId = response.headers.get("x-request-id");
+          if (!response.ok) {
+            let summary = "";
+            try {
+              summary = sanitizeSummary(await response.text(), token);
+            } catch {
+              // HTTP status is already terminal even when its body disconnects during reading.
+            }
+            throw new ProviderError(
+              "PROVIDER_HTTP_ERROR",
+              summary ? `模型提供方返回 HTTP ${response.status}：${summary}` : `模型提供方返回 HTTP ${response.status}。`,
+              { statusCode: 502, providerStatus: response.status, requestId },
+            );
+          }
+
+          let payload;
+          let streamedTextLength = 0;
+          try {
+            payload = await readProviderResponse(response, {
+              protocol,
+              onEvent: streaming
+                ? (event) => {
+                    if (event?.type === "text_delta" && typeof event.text === "string" && event.text !== "") {
+                      streamedTextLength += event.text.length;
+                    }
+                    onEvent(event);
+                  }
+                : undefined,
+              signal: abort.signal,
+            });
+          } catch (error) {
+            const interrupted = interruptionError(signal, abort);
+            if (interrupted) throw interrupted;
+            if (isRetryableTransportError(error)) {
+              await reconnect(streamedTextLength);
+              continue;
+            }
+            const code = error?.code === "PROVIDER_STREAM_ERROR"
+              ? "PROVIDER_STREAM_ERROR"
+              : "PROVIDER_RESPONSE_INVALID";
+            throw new ProviderError(
+              code,
+              code === "PROVIDER_STREAM_ERROR"
+                ? sanitizeSummary(error instanceof Error ? error.message : "模型提供方返回了流式错误。", token)
+                : "模型提供方返回了无效 JSON。",
+              { statusCode: 502, requestId },
+            );
+          }
+
+          let normalized;
+          try {
+            normalized = normalizeProviderResponse(protocol, payload);
+          } catch (error) {
+            if (error instanceof ProviderError) throw error;
+            throw new ProviderError("PROVIDER_RESPONSE_INVALID", "模型提供方响应格式无效。", { statusCode: 502, requestId });
+          }
+          return {
+            ...payload,
+            ...normalized,
+            __chatExcel: runtimeMetadata(config),
+          };
         }
-        if (abort.didTimeOut()) {
-          abort.cleanup();
-          throw new ProviderError("PROVIDER_TIMEOUT", "模型提供方响应超时。", { statusCode: 504 });
-        }
-        const code = error?.code === "PROVIDER_STREAM_ERROR"
-          ? "PROVIDER_STREAM_ERROR"
-          : "PROVIDER_RESPONSE_INVALID";
+      } finally {
         abort.cleanup();
-        throw new ProviderError(
-          code,
-          code === "PROVIDER_STREAM_ERROR"
-            ? sanitizeSummary(error instanceof Error ? error.message : "模型提供方返回了流式错误。", config.token)
-            : "模型提供方返回了无效 JSON。",
-          { statusCode: 502, requestId },
-        );
       }
-      abort.cleanup();
-      let normalized;
-      try {
-        normalized = normalizeProviderResponse(protocol, payload);
-      } catch (error) {
-        if (error instanceof ProviderError) throw error;
-        throw new ProviderError("PROVIDER_RESPONSE_INVALID", "模型提供方响应格式无效。", { statusCode: 502, requestId });
-      }
-      return {
-        ...payload,
-        ...normalized,
-        __chatExcel: runtimeMetadata(config),
-      };
     },
   };
 }

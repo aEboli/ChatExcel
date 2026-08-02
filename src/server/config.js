@@ -195,6 +195,7 @@ export function parseCodexConfig(source, { env = process.env, configPath = "conf
     "CONFIG_CONTEXT_WINDOW_INVALID",
     "Codex 配置中的 model_context_window 必须是 1024 到 2000000 之间的整数。",
   );
+  const contextWindowConfigured = document.model_context_window !== undefined;
 
   return Object.freeze({
     configPath,
@@ -212,6 +213,7 @@ export function parseCodexConfig(source, { env = process.env, configPath = "conf
     reasoningEffort,
     verbosity,
     contextWindow,
+    contextWindowConfigured,
     token,
     tokenSource,
   });

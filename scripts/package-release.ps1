@@ -8,8 +8,9 @@ $scriptDirectory = Split-Path -Parent $MyInvocation.MyCommand.Path
 $projectRoot = (Resolve-Path (Join-Path $scriptDirectory "..")).Path
 $packageJsonPath = Join-Path $projectRoot "package.json"
 $package = [IO.File]::ReadAllText($packageJsonPath, [Text.Encoding]::UTF8) | ConvertFrom-Json
-if ($package.version -ne "0.0.1") {
-    throw "package.json version must be 0.0.1; current version is $($package.version)."
+$releaseVersion = [string]$package.version
+if ($releaseVersion -notmatch '^\d+\.\d+\.\d+$') {
+    throw "package.json version must use MAJOR.MINOR.PATCH; current version is $releaseVersion."
 }
 
 if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
@@ -23,7 +24,7 @@ if ($LASTEXITCODE -ne 0) {
 }
 $releaseRoot = Join-Path $outputRoot "ChatExcel Launcher"
 $releaseDirectory = Join-Path $outputRoot "releases"
-$zipName = "ChatExcel-Launcher-0.0.1-win-x64.zip"
+$zipName = "ChatExcel-Launcher-$releaseVersion-win-x64.zip"
 $zipPath = Join-Path $releaseDirectory $zipName
 $hashPath = "$zipPath.sha256"
 

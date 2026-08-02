@@ -49,6 +49,28 @@ export class HistoryState {
     return operation;
   }
 
+  clear() {
+    this.activities = [];
+    this.operations = [];
+    this.messages = [];
+    this.cursor = null;
+    this.activeOperationId = null;
+  }
+
+  restorePresentation(messages) {
+    if (!Array.isArray(messages)) {
+      throw new TypeError("恢复展示消息必须是数组。" );
+    }
+
+    this.clear();
+    const roles = new Set(["user", "assistant", "notice", "error"]);
+    for (const entry of messages) {
+      if (!entry || !roles.has(entry.role) || typeof entry.text !== "string") continue;
+      this.addMessage(entry.role, entry.text, { timelineIndex: -1 });
+    }
+    return this.messages.length;
+  }
+
   addActivity(activity) {
     const index = this.activities.length;
     let operationId = activity.operationId ?? this.activeOperationId;
@@ -67,6 +89,45 @@ export class HistoryState {
     return message;
   }
 
+  removeMessage(messageId) {
+    const messageIndex = this.messages.findIndex((entry) => entry.id === messageId);
+    if (messageIndex === -1) return null;
+    return this.messages.splice(messageIndex, 1)[0];
+  }
+
+  trimMessageSuffix(messageId, length) {
+    const message = this.messages.find((entry) => entry.id === messageId);
+    if (!message || !Number.isSafeInteger(length) || length <= 0) return message ?? null;
+    message.text = message.text.slice(0, Math.max(0, message.text.length - length));
+    return message.text === "" ? this.removeMessage(messageId) : message;
+  }
+
+  finalizeMessage(messageId, text, { preservePrefixLength = 0 } = {}) {
+    const messageIndex = this.messages.findIndex((entry) => entry.id === messageId);
+    if (messageIndex === -1) return null;
+
+    const message = this.messages[messageIndex];
+    const currentText = typeof message.text === "string" ? message.text : "";
+    const prefixLength = Number.isSafeInteger(preservePrefixLength)
+      ? Math.max(0, Math.min(preservePrefixLength, currentText.length))
+      : 0;
+    const prefix = currentText.slice(0, prefixLength);
+    const currentStepText = typeof text === "string" && text !== ""
+      ? text
+      : currentText.slice(prefixLength);
+    const finalText = `${prefix}${currentStepText}` || "模型未返回文本。";
+    if (message.timelineIndex === this.latestIndex) {
+      message.text = finalText;
+      return message;
+    }
+
+    this.messages.splice(messageIndex, 1);
+    message.text = finalText;
+    message.timelineIndex = this.latestIndex;
+    this.messages.push(message);
+    return message;
+  }
+
   updateActivity(callId, patch) {
     const entry = this.activities.find((activity) => activity.callId === callId);
     if (!entry) return null;
@@ -74,12 +135,11 @@ export class HistoryState {
     return entry;
   }
 
-  addMessage(role, text, { attachments = [], timelineIndex = this.latestIndex } = {}) {
+  addMessage(role, text, { timelineIndex = this.latestIndex } = {}) {
     const message = {
       id: globalThis.crypto?.randomUUID?.() ?? `message_${this.messages.length + 1}`,
       role,
       text,
-      attachments: attachments.map((attachment) => ({ ...attachment })),
       timelineIndex,
     };
     this.messages.push(message);

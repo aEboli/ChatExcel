@@ -5,6 +5,9 @@ import * as executorModule from "../src/taskpane/excel-executor.js";
 function makeRange({ rows = 2, columns = 2 } = {}) {
   let assignedValues = 0;
   let assignedFormulas = 0;
+  let assignedNumberFormats = 0;
+  let lastAssignedNumberFormat = null;
+  let numberFormat = [["General", "General"], ["General", "General"]];
   const loaded = [];
   const range = {
     address: "测试!A1:B2",
@@ -34,7 +37,14 @@ function makeRange({ rows = 2, columns = 2 } = {}) {
     set formulas(_value) {
       assignedFormulas += 1;
     },
-    numberFormat: [["General", "General"], ["General", "General"]],
+    get numberFormat() {
+      return numberFormat;
+    },
+    set numberFormat(value) {
+      assignedNumberFormats += 1;
+      lastAssignedNumberFormat = value;
+      numberFormat = value;
+    },
   };
   return {
     range,
@@ -44,6 +54,12 @@ function makeRange({ rows = 2, columns = 2 } = {}) {
     },
     get assignedFormulas() {
       return assignedFormulas;
+    },
+    get assignedNumberFormats() {
+      return assignedNumberFormats;
+    },
+    get lastAssignedNumberFormat() {
+      return lastAssignedNumberFormat;
     },
   };
 }
@@ -105,6 +121,76 @@ test("尺寸匹配时只执行一次批量赋值", async () => {
 
   assert.equal(result.ok, true);
   assert.equal(state.assignedValues, 1);
+});
+
+test("安全数字格式范围只赋值一次且矩阵尺寸匹配", async () => {
+  const state = makeRange({ rows: 2, columns: 3 });
+  state.range.address = "测试!A1:C2";
+  installExcelMock(state);
+
+  const result = await executorModule.executeExcelTool("set_number_format", {
+    worksheet: null,
+    address: "A1:C2",
+    formatCode: "#,##0.00",
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(state.assignedNumberFormats, 1);
+  assert.deepEqual(state.lastAssignedNumberFormat, [
+    ["#,##0.00", "#,##0.00", "#,##0.00"],
+    ["#,##0.00", "#,##0.00", "#,##0.00"],
+  ]);
+});
+
+async function assertOversizedNumberFormatIsRejectedBeforeMatrixCreation({
+  rows,
+  columns,
+  address,
+}) {
+  const state = makeRange({ rows, columns });
+  state.range.address = `测试!${address}`;
+  installExcelMock(state);
+
+  const originalArrayFrom = Array.from;
+  let attemptedLargeMatrixCreation = false;
+  Array.from = function guardedArrayFrom(source, ...args) {
+    if (source?.length > 5_000) {
+      attemptedLargeMatrixCreation = true;
+      throw new Error("不应在超限范围构造数字格式矩阵。");
+    }
+    return originalArrayFrom.call(this, source, ...args);
+  };
+
+  try {
+    await assert.rejects(
+      () =>
+        executorModule.executeExcelTool("set_number_format", {
+          worksheet: null,
+          address,
+          formatCode: "0.00",
+        }),
+      (error) => error.code === "NUMBER_FORMAT_RANGE_TOO_LARGE",
+    );
+  } finally {
+    Array.from = originalArrayFrom;
+  }
+
+  assert.equal(attemptedLargeMatrixCreation, false);
+  assert.equal(state.assignedNumberFormats, 0);
+  assert.deepEqual(state.loaded, ["address,rowCount,columnCount"]);
+}
+
+test("超大整列或整行数字格式在创建矩阵前被拒绝", async () => {
+  await assertOversizedNumberFormatIsRejectedBeforeMatrixCreation({
+    rows: 1_048_576,
+    columns: 1,
+    address: "A:A",
+  });
+  await assertOversizedNumberFormatIsRejectedBeforeMatrixCreation({
+    rows: 1,
+    columns: 16_384,
+    address: "1:1",
+  });
 });
 
 test("超限选区只读取尺寸元数据，不加载单元格内容", async () => {

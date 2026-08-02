@@ -7,6 +7,12 @@ $ErrorActionPreference = "Stop"
 $scriptDirectory = Split-Path -Parent $MyInvocation.MyCommand.Path
 $projectRoot = (Resolve-Path (Join-Path $scriptDirectory "..")).Path
 $launcherProject = Join-Path $projectRoot "launcher\ChatExcelLauncher.csproj"
+$packageJsonPath = Join-Path $projectRoot "package.json"
+$package = [IO.File]::ReadAllText($packageJsonPath, [Text.Encoding]::UTF8) | ConvertFrom-Json
+$releaseVersion = [string]$package.version
+if ($releaseVersion -notmatch '^\d+\.\d+\.\d+$') {
+    throw "package.json version must use MAJOR.MINOR.PATCH; current version is $releaseVersion."
+}
 $nodePath = (Get-Command node -ErrorAction Stop).Source
 $nodeVersion = (& $nodePath --version).Trim()
 if ([version]($nodeVersion.TrimStart("v")) -lt [version]"20.0.0") {
@@ -83,7 +89,7 @@ finally {
 
 $metadata = [ordered]@{
     name = "ChatExcel Launcher"
-    version = "0.0.1"
+    version = $releaseVersion
     architecture = "win-x64"
     node = $nodeVersion
     builtAt = [DateTimeOffset]::Now.ToString("O")

@@ -9,6 +9,11 @@ export const DEFAULT_SETTINGS_PATH = join(
   "ChatExcel",
   "settings.json",
 );
+export const DEFAULT_APPROVAL_MODE = "required";
+
+export function isApprovalMode(value) {
+  return value === "required" || value === "auto";
+}
 
 export class SettingsStoreError extends Error {
   constructor(code, message, options = {}) {
@@ -110,9 +115,17 @@ export class SettingsStore {
     return value;
   }
 
-  async save({ useSystemConfig, custom, maxSteps = DEFAULT_MAX_STEPS }) {
+  async save({
+    useSystemConfig,
+    custom,
+    maxSteps = DEFAULT_MAX_STEPS,
+    approvalMode = DEFAULT_APPROVAL_MODE,
+  }) {
     if (typeof useSystemConfig !== "boolean" || (custom !== null && !assertObject(custom))) {
       throw new SettingsStoreError("SETTINGS_INVALID", "要保存的 ChatExcel 配置格式无效。" );
+    }
+    if (!isApprovalMode(approvalMode)) {
+      throw new SettingsStoreError("APPROVAL_MODE_INVALID", "审批模式只能是需要审批或无需审批。" );
     }
     let normalizedMaxSteps;
     try {
@@ -132,6 +145,7 @@ export class SettingsStore {
       version: 1,
       useSystemConfig,
       maxSteps: normalizedMaxSteps,
+      approvalMode,
       custom: custom
         ? {
             protocol: custom.protocol,

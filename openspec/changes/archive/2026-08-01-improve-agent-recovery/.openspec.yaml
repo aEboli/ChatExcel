@@ -1,0 +1,3 @@
+schema: spec-driven
+created: 2026-08-01
+goal: 保留工作簿安全边界，减少可恢复参数错误导致的 Agent 任务中断。

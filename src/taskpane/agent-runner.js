@@ -27,7 +27,7 @@ function cancelledResult() {
 }
 
 export class AgentRunner {
-  constructor({ api, executeTool, requestApproval, onEvent = () => {} } = {}) {
+  constructor({ api, executeTool, requestApproval, captureToolPreview, onEvent = () => {} } = {}) {
     if (!api || typeof api.start !== "function") {
       throw new TypeError("AgentRunner 需要本地 API 客户端。" );
     }
@@ -37,10 +37,31 @@ export class AgentRunner {
     this.api = api;
     this.executeTool = executeTool;
     this.requestApproval = requestApproval;
+    this.captureToolPreview = typeof captureToolPreview === "function"
+      ? captureToolPreview
+      : async () => null;
     this.onEvent = onEvent;
     this.sessionId = null;
     this.running = false;
     this.controller = null;
+  }
+
+  restoreSession(sessionId) {
+    if (this.running) {
+      throw new AgentRunnerError("RUN_ALREADY_ACTIVE", "当前任务尚未完成。" );
+    }
+    if (typeof sessionId !== "string" || sessionId.trim() === "") {
+      throw new TypeError("恢复会话需要有效的会话 ID。" );
+    }
+    this.sessionId = sessionId.trim();
+  }
+
+  async capturePreview(details) {
+    try {
+      return await this.captureToolPreview(details);
+    } catch {
+      return null;
+    }
   }
 
   async run(message, options = {}) {
@@ -101,7 +122,8 @@ export class AgentRunner {
             signal.throwIfAborted();
             if (!approved) {
               output = cancelledResult();
-              this.onEvent({ type: "tool_denied", call, tool, arguments: args, output });
+              const preview = await this.capturePreview({ call, tool, arguments: args, output });
+              this.onEvent({ type: "tool_denied", call, tool, arguments: args, output, preview });
             }
           }
 
@@ -109,12 +131,14 @@ export class AgentRunner {
             this.onEvent({ type: "tool_running", call, tool, arguments: args });
             output = await this.executeTool(call.name, args);
             signal.throwIfAborted();
+            const preview = await this.capturePreview({ call, tool, arguments: args, output });
             this.onEvent({
               type: "tool_completed",
               call,
               tool,
               arguments: args,
               output,
+              preview,
             });
           }
 
@@ -143,8 +167,11 @@ export class AgentRunner {
         this.onEvent({ type: "run_stopped" });
         return { status: "stopped" };
       }
-      this.sessionId = null;
-      this.onEvent({ type: "run_error", error });
+      const recoverableSession = error?.recoverableSession === true;
+      if (!recoverableSession) {
+        this.sessionId = null;
+      }
+      this.onEvent({ type: "run_error", error, recoverableSession });
       throw error;
     } finally {
       this.running = false;

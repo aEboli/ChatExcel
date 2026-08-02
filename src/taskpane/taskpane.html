@@ -38,6 +38,13 @@
           <span id="history-label"></span>
           <button class="text-button" id="history-latest-button" type="button">回到最新</button>
         </div>
+        <section class="history-preview" id="history-preview" aria-live="polite" hidden>
+          <div class="history-preview-heading">
+            <span>步骤预览</span>
+            <strong id="history-preview-title"></strong>
+          </div>
+          <div class="history-preview-body" id="history-preview-body"></div>
+        </section>
         <div class="activity-list" id="activity-list">
           <div class="activity-empty" id="activity-empty">暂无操作</div>
         </div>
@@ -49,6 +56,11 @@
           <strong>准备就绪</strong>
         </div>
       </main>
+
+      <section class="recovery-notice" id="recovery-notice" role="status" aria-live="polite" hidden>
+        <span id="recovery-notice-text"></span>
+        <button class="text-button" id="clear-recovery-button" type="button" hidden>清空恢复会话</button>
+      </section>
 
       <section class="approval" id="approval" aria-labelledby="approval-title" hidden>
         <div class="approval-heading">
@@ -69,8 +81,6 @@
       </section>
 
       <footer class="composer-shell glass-surface">
-        <div class="attachment-error" id="attachment-error" role="alert" hidden></div>
-        <div class="attachment-list" id="attachment-list" hidden></div>
         <div class="composer" id="composer">
           <label class="sr-only" for="prompt-input">工作簿任务</label>
           <textarea
@@ -104,10 +114,6 @@
             </div>
 
             <div class="toolbar-group action-controls">
-              <input id="image-input" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden />
-              <button class="icon-button compact" id="image-button" type="button" title="添加图片" aria-label="添加图片">
-                <img src="/assets/fluent/image-add.svg" alt="" />
-              </button>
               <div class="menu-anchor mode-anchor">
                 <button class="mode-button is-required" id="mode-button" type="button" aria-expanded="false">
                   <img id="mode-icon" src="/assets/fluent/approval.svg" alt="" />
@@ -191,8 +197,16 @@
           </section>
 
           <section class="settings-section custom-settings" id="custom-settings" hidden>
-            <label class="field-label" for="api-protocol">API 协议</label>
-            <select id="api-protocol" name="protocol"></select>
+            <div class="protocol-field">
+              <div class="protocol-select-field">
+                <label class="field-label" for="api-protocol">API 协议</label>
+                <select id="api-protocol" name="protocol" aria-describedby="protocol-model-examples"></select>
+              </div>
+              <div class="protocol-model-examples" id="protocol-model-examples" aria-live="polite">
+                <span class="protocol-model-examples-label">常见模型</span>
+                <div class="protocol-model-list" id="protocol-model-list"></div>
+              </div>
+            </div>
             <p class="mapping-note">选择提供方协议；系统会自动补全对应的版本路径和生成接口。</p>
 
             <label class="field-label" for="api-url">API URL</label>
@@ -216,8 +230,8 @@
                 <input id="context-window" name="contextWindow" type="number" min="1024" max="2000000" step="1" value="200000" />
               </div>
               <div>
-                <label class="field-label" for="settings-effort">思考等级</label>
-                <select id="settings-effort" name="reasoningEffort" disabled>
+                <label class="field-label" for="settings-effort">思考等级（自动）</label>
+                <select id="settings-effort" name="reasoningEffort" disabled aria-describedby="mapping-note">
                   <option value="">请先选择模型</option>
                 </select>
               </div>
@@ -255,7 +269,6 @@
       </div>
     </div>
 
-    <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
-    <script type="module" src="/taskpane.js"></script>
+    <script type="module" src="/bootstrap.js"></script>
   </body>
 </html>

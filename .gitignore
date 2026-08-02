@@ -8,4 +8,6 @@ work/
 dist*/
 launcher/bin/
 launcher/obj/
+tests/native-smoke/bin/
+tests/native-smoke/obj/
 assets/screenshots/reference-*.png

@@ -37,6 +37,7 @@ test("解析自定义 Responses 提供方并构造接口", () => {
   assert.equal(config.reasoningEffort, "high");
   assert.equal(config.verbosity, "low");
   assert.equal(config.contextWindow, 160000);
+  assert.equal(config.contextWindowConfigured, true);
   assert.equal(config.responsesUrl, "http://127.0.0.1:8080/v1/responses?region=local");
   assert.equal(config.token, "test-secret");
   assert.equal(config.tokenSource, "config");
@@ -59,6 +60,7 @@ experimental_bearer_token = "must-not-be-used"
 
   assert.equal(config.token, "environment-secret");
   assert.equal(config.tokenSource, "environment");
+  assert.equal(config.contextWindowConfigured, false);
 });
 
 test("环境变量令牌缺失时失败关闭", () => {

@@ -12,7 +12,13 @@ function safeJson(value) {
   }
 }
 
-function parseSseFrame(lines) {
+function providerStreamError(code, message) {
+  const error = new Error(message);
+  error.code = code;
+  return error;
+}
+
+function parseSseFrame(lines, { terminated } = {}) {
   let event = "message";
   const data = [];
   for (const rawLine of lines) {
@@ -25,20 +31,20 @@ function parseSseFrame(lines) {
     }
   }
   if (data.length === 0) return null;
-  return { event, data: data.join("\n") };
+  return { event, data: data.join("\n"), terminated };
 }
 
 async function* readSseFrames(body, signal) {
   if (!body || typeof body.getReader !== "function") {
-    throw new Error("上游事件流缺少可读取的响应体。" );
+    throw providerStreamError("PROVIDER_STREAM_INVALID", "上游事件流缺少可读取的响应体。" );
   }
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
   let frameLines = [];
 
-  const flushFrame = () => {
-    const frame = parseSseFrame(frameLines);
+  const flushFrame = (terminated) => {
+    const frame = parseSseFrame(frameLines, { terminated });
     frameLines = [];
     return frame;
   };
@@ -53,7 +59,7 @@ async function* readSseFrames(body, signal) {
       buffer = lines.pop() ?? "";
       for (const line of lines) {
         if (line.replace(/\r$/, "") === "") {
-          const frame = flushFrame();
+          const frame = flushFrame(true);
           if (frame) yield frame;
         } else {
           frameLines.push(line);
@@ -62,11 +68,38 @@ async function* readSseFrames(body, signal) {
     }
     buffer += decoder.decode();
     if (buffer !== "") frameLines.push(buffer);
-    const frame = flushFrame();
+    const frame = flushFrame(false);
     if (frame) yield frame;
   } finally {
     reader.releaseLock?.();
   }
+}
+
+function isTerminalSseEvent(protocol, frame, payload) {
+  if (frame.data === "[DONE]") return true;
+  if (protocol === "openai-responses") return frame.event === "response.completed";
+  if (protocol === "anthropic-messages") return frame.event === "message_stop";
+  if (protocol === "google-gemini") {
+    return payload?.candidates?.some((candidate) =>
+      typeof candidate?.finishReason === "string" && candidate.finishReason !== "",
+    ) === true;
+  }
+  return false;
+}
+
+function isProviderFailureEvent(frame, payload) {
+  return frame.event === "error" ||
+    frame.event === "response.failed" ||
+    frame.event === "response.incomplete" ||
+    payload?.type === "error" ||
+    (payload && typeof payload === "object" && payload.error !== undefined);
+}
+
+function isValidSsePayload(protocol, payload) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload) || Object.keys(payload).length === 0) {
+    return false;
+  }
+  return protocol !== "openai-chat-completions" || Array.isArray(payload.choices);
 }
 
 function normalizeCallKey(value, fallback) {
@@ -119,6 +152,9 @@ function createResponsesAccumulator(onEvent) {
       } else if (event === "response.function_call_arguments.delta" && typeof payload.delta === "string") {
         upsertCall({ item_id: payload.item_id }, payload.item_id ?? payload.output_index).arguments += payload.delta;
       } else if (event === "response.completed") {
+        if (!response || typeof response !== "object" || !Array.isArray(response.output)) {
+          throw providerStreamError("PROVIDER_STREAM_INVALID", "上游事件流终态响应缺少 output 数组。" );
+        }
         completedResponse = response;
       }
     },
@@ -344,21 +380,60 @@ export async function readProviderResponse(response, { protocol, onEvent, signal
   }
 
   const accumulator = createAccumulator(protocol, onEvent);
-  for await (const frame of readSseFrames(response.body, signal)) {
-    if (frame.data === "[DONE]") continue;
-    const payload = safeJson(frame.data);
-    if (payload === null) {
-      throw new Error("上游事件流包含无效 JSON。" );
+  let completed = false;
+  try {
+    for await (const frame of readSseFrames(response.body, signal)) {
+      try {
+        if (frame.data === "[DONE]") {
+          completed = true;
+          break;
+        }
+        const payload = safeJson(frame.data);
+        if (payload === null) {
+          if (!frame.terminated) {
+            throw providerStreamError("PROVIDER_STREAM_DISCONNECTED", "模型提供方事件流在完整帧前断开。" );
+          }
+          throw providerStreamError("PROVIDER_STREAM_INVALID", "上游事件流包含无效 JSON。" );
+        }
+        if (isProviderFailureEvent(frame, payload)) {
+          const message = typeof payload.error?.message === "string"
+            ? payload.error.message
+            : "模型提供方返回了流式错误。";
+          throw providerStreamError("PROVIDER_STREAM_ERROR", message);
+        }
+        if (!isValidSsePayload(protocol, payload)) {
+          throw providerStreamError("PROVIDER_STREAM_INVALID", "上游事件流响应结构无效。" );
+        }
+        accumulator.push(frame.event, payload);
+        if (isTerminalSseEvent(protocol, frame, payload)) {
+          completed = true;
+          break;
+        }
+      } catch (error) {
+        if (
+          signal?.aborted ||
+          error?.code === "PROVIDER_STREAM_ERROR" ||
+          error?.code === "PROVIDER_STREAM_INVALID" ||
+          error?.code === "PROVIDER_STREAM_DISCONNECTED"
+        ) {
+          throw error;
+        }
+        throw providerStreamError("PROVIDER_STREAM_INVALID", "上游事件流响应结构无效。" );
+      }
     }
-    if (frame.event === "error") {
-      const message = typeof payload.error?.message === "string"
-        ? payload.error.message
-        : "模型提供方返回了流式错误。";
-      const error = new Error(message);
-      error.code = "PROVIDER_STREAM_ERROR";
+  } catch (error) {
+    if (
+      signal?.aborted ||
+      error?.code === "PROVIDER_STREAM_ERROR" ||
+      error?.code === "PROVIDER_STREAM_INVALID"
+    ) {
       throw error;
     }
-    accumulator.push(frame.event, payload);
+    throw providerStreamError("PROVIDER_STREAM_DISCONNECTED", "模型提供方事件流连接中断。" );
+  }
+
+  if (!completed) {
+    throw providerStreamError("PROVIDER_STREAM_DISCONNECTED", "模型提供方事件流在完成前断开。" );
   }
   return accumulator.finish();
 }

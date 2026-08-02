@@ -51,6 +51,27 @@ test("解析并验证合法工具参数", () => {
   assert.equal(args.values[1][1], 2);
 });
 
+test("接受单元格、矩形、整列、整行和绝对 A1 范围", () => {
+  for (const address of ["A1", "A1:D20", "$A$1:$D$20", "N:R", "$N:$R", "1:3", "$1:$3"]) {
+    const args = parseAndValidateToolArguments("autofit_range", {
+      worksheet: null,
+      address,
+      columns: true,
+      rows: false,
+    });
+    assert.equal(args.address, address);
+  }
+});
+
+test("拒绝工作表限定符、联合范围、外部引用和公式地址", () => {
+  for (const address of ["Sheet1!A1:B2", "A1:B2,D1:E2", "[Book.xlsx]Sheet1!A1", "=A1:B2"]) {
+    assert.throws(
+      () => parseAndValidateToolArguments("read_range", { worksheet: null, address }),
+      (error) => error instanceof ToolValidationError && error.code === "RANGE_ADDRESS_INVALID",
+    );
+  }
+});
+
 test("拒绝未知工具、未知参数和无效 JSON", () => {
   assert.throws(
     () => parseAndValidateToolArguments("not_registered", {}),

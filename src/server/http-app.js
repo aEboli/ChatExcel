@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { loadCodexConfig, toPublicConfig } from "./config.js";
 import { APP_NAME, APP_VERSION, SERVICE_ORIGIN, SERVICE_PORT } from "../shared/app-info.js";
+import { createLegacyWorkbookBridge } from "./legacy-workbook-bridge.js";
 
 const moduleDirectory = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(moduleDirectory, "..", "..");
@@ -21,6 +22,10 @@ const contentSecurityPolicy = [
   "base-uri 'none'",
   "form-action 'none'",
 ].join("; ");
+const recoveryNotices = new Set([
+  "model_request_interrupted",
+  "tool_execution_interrupted",
+]);
 
 class HttpError extends Error {
   constructor(statusCode, code, message) {
@@ -35,8 +40,8 @@ function normalizedHeader(value) {
   return typeof value === "string" ? value.trim().toLowerCase() : "";
 }
 
-function errorBody(code, message) {
-  return { ok: false, error: { code, message } };
+function errorBody(code, message, extra = {}) {
+  return { ok: false, error: { code, message, ...extra } };
 }
 
 function wantsEventStream(req) {
@@ -53,7 +58,12 @@ function streamError(error) {
       : error instanceof Error
         ? error.message
         : "请求失败。";
-  return { statusCode, body: errorBody(code, message) };
+  return {
+    statusCode,
+    body: errorBody(code, message, {
+      ...(error?.recoverableSession === true ? { recoverableSession: true } : {}),
+    }),
+  };
 }
 
 function writeStreamEvent(res, event, payload) {
@@ -83,7 +93,7 @@ async function sendSessionResponse(req, res, operation, { statusCode = 200, onDi
   const handleClose = () => {
     if (!res.writableEnded) onDisconnect?.();
   };
-  req.once("close", handleClose);
+  res.once("close", handleClose);
   try {
     const result = await operation((event) => writeStreamEvent(res, "delta", event));
     writeStreamEvent(res, "result", result);
@@ -91,7 +101,7 @@ async function sendSessionResponse(req, res, operation, { statusCode = 200, onDi
   } catch (error) {
     writeStreamEvent(res, "error", streamError(error).body);
   } finally {
-    req.off("close", handleClose);
+    res.off("close", handleClose);
     if (!res.writableEnded) res.end();
   }
 }
@@ -101,6 +111,11 @@ function requireJson(req, _res, next) {
     next(new HttpError(415, "CONTENT_TYPE_REQUIRED", "此接口只接受 JSON 请求。"));
     return;
   }
+  next();
+}
+
+function noStore(_req, res, next) {
+  res.set("Cache-Control", "no-store");
   next();
 }
 
@@ -127,6 +142,49 @@ function requireSessionManager(sessionManager) {
   return sessionManager;
 }
 
+function suspendOrCancelSession(sessionManager, sessionId) {
+  const action = typeof sessionManager.suspend === "function"
+    ? sessionManager.suspend
+    : sessionManager.cancel;
+  if (typeof action === "function") {
+    void Promise.resolve()
+      .then(() => action.call(sessionManager, sessionId))
+      .catch(() => {});
+  }
+}
+
+function recoveryPresentationMessages(presentation) {
+  if (!Array.isArray(presentation?.messages)) return [];
+  return presentation.messages.flatMap((message) => {
+    if (
+      (message?.role !== "user" && message?.role !== "assistant") ||
+      typeof message.text !== "string"
+    ) {
+      return [];
+    }
+    return [{ role: message.role, text: message.text }];
+  });
+}
+
+function publicRecoveryPayload(restored) {
+  if (!restored || typeof restored.sessionId !== "string") {
+    const status = restored?.recovery?.status;
+    return {
+      status: status === "expired" || status === "unavailable" ? status : "missing",
+    };
+  }
+  const notice = recoveryNotices.has(restored.recovery?.notice)
+    ? restored.recovery.notice
+    : null;
+  return {
+    status: "available",
+    sessionId: restored.sessionId,
+    presentationMessages: recoveryPresentationMessages(restored.presentation),
+    interrupted: notice !== null,
+    notice,
+  };
+}
+
 function requireRuntimeConfigStore(runtimeConfigStore) {
   if (!runtimeConfigStore) {
     throw new HttpError(503, "SETTINGS_UNAVAILABLE", "运行时配置服务尚未就绪。" );
@@ -138,6 +196,7 @@ export function createApp({
   configLoader = loadCodexConfig,
   runtimeConfigStore,
   sessionManager,
+  legacyWorkbookBridge = createLegacyWorkbookBridge(),
   allowedHosts = defaultAllowedHosts,
   allowedOrigins = defaultAllowedOrigins,
   taskpaneDirectory = resolve(projectRoot, "src", "taskpane"),
@@ -169,6 +228,7 @@ export function createApp({
       ok: true,
       service: APP_NAME,
       version: APP_VERSION,
+      capabilities: ["office-addin", "native-xls"],
     });
   });
 
@@ -196,6 +256,7 @@ export function createApp({
   const settingsJson = express.json({ limit: "64kb", strict: true });
   const agentJson = express.json({ limit: "8mb", strict: true });
   const toolResultsJson = express.json({ limit: "512kb", strict: true });
+  const legacyJson = express.json({ limit: "512kb", strict: true });
 
   app.post(
     "/api/settings",
@@ -210,6 +271,18 @@ export function createApp({
   );
 
   app.post(
+    "/api/settings/approval-mode",
+    requireAllowedOrigin(allowedOrigins),
+    requireJson,
+    settingsJson,
+    async (req, res) => {
+      const store = requireRuntimeConfigStore(runtimeConfigStore);
+      const state = await store.updateApprovalMode(req.body?.approvalMode);
+      res.json({ ok: true, ...state });
+    },
+  );
+
+  app.post(
     "/api/models",
     requireAllowedOrigin(allowedOrigins),
     requireJson,
@@ -218,6 +291,19 @@ export function createApp({
       const store = requireRuntimeConfigStore(runtimeConfigStore);
       const result = await store.discoverModels(req.body);
       res.json({ ok: true, ...result });
+    },
+  );
+
+  app.post(
+    "/api/provider-connectivity",
+    requireAllowedOrigin(allowedOrigins),
+    requireJson,
+    settingsJson,
+    async (_req, res) => {
+      const store = requireRuntimeConfigStore(runtimeConfigStore);
+      const connectivity = await store.probeCurrentProvider();
+      res.set("Cache-Control", "no-store");
+      res.json({ ok: true, connectivity });
     },
   );
 
@@ -239,10 +325,11 @@ export function createApp({
             attachments: req.body?.attachments,
             model: req.body?.model,
             reasoningEffort: req.body?.reasoningEffort,
+            workbookBinding: req.body?.workbookBinding,
           },
           { onEvent },
         ),
-        { statusCode: 201, onDisconnect: () => void manager.cancel(sessionId) },
+        { statusCode: 201, onDisconnect: () => suspendOrCancelSession(manager, sessionId) },
       );
     },
   );
@@ -267,7 +354,7 @@ export function createApp({
           },
           { onEvent },
         ),
-        { onDisconnect: () => void manager.cancel(req.params.sessionId) },
+        { onDisconnect: () => suspendOrCancelSession(manager, req.params.sessionId) },
       );
     },
   );
@@ -287,8 +374,53 @@ export function createApp({
           req.body?.results,
           { onEvent },
         ),
-        { onDisconnect: () => void manager.cancel(req.params.sessionId) },
+        { onDisconnect: () => suspendOrCancelSession(manager, req.params.sessionId) },
       );
+    },
+  );
+
+  app.post(
+    "/api/conversation-recovery/restore",
+    noStore,
+    requireAllowedOrigin(allowedOrigins),
+    requireJson,
+    settingsJson,
+    async (req, res) => {
+      const manager = requireSessionManager(sessionManager);
+      const restored = await manager.restore(req.body?.workbookBinding);
+      res.json({ ok: true, recovery: publicRecoveryPayload(restored) });
+    },
+  );
+
+  app.post(
+    "/api/conversation-recovery/touch",
+    noStore,
+    requireAllowedOrigin(allowedOrigins),
+    requireJson,
+    settingsJson,
+    async (req, res) => {
+      const manager = requireSessionManager(sessionManager);
+      const touched = await manager.touchRecovery(req.body?.sessionId, req.body?.workbookBinding);
+      const status = typeof touched === "object" && touched !== null
+        ? touched.status
+        : touched ? "touched" : "missing";
+      res.json({
+        ok: true,
+        active: {
+          status: ["touched", "expired", "unavailable"].includes(status) ? status : "missing",
+        },
+      });
+    },
+  );
+
+  app.delete(
+    "/api/conversation-recovery/:sessionId",
+    noStore,
+    requireAllowedOrigin(allowedOrigins),
+    async (req, res) => {
+      const manager = requireSessionManager(sessionManager);
+      await manager.cancel(req.params.sessionId);
+      res.status(204).end();
     },
   );
 
@@ -297,8 +429,24 @@ export function createApp({
     requireAllowedOrigin(allowedOrigins),
     async (req, res) => {
       const manager = requireSessionManager(sessionManager);
+      res.set("Cache-Control", "no-store");
       await manager.cancel(req.params.sessionId);
       res.status(204).end();
+    },
+  );
+
+  app.post(
+    "/api/legacy/:sessionId",
+    requireAllowedOrigin(allowedOrigins),
+    requireJson,
+    legacyJson,
+    async (req, res) => {
+      const result = await legacyWorkbookBridge.request(req.params.sessionId, req.body);
+      if (result?.ok === false) {
+        res.status(422).json(result);
+        return;
+      }
+      res.json(result);
     },
   );
 
@@ -354,7 +502,9 @@ export function createApp({
           : error instanceof Error
             ? error.message
             : "请求失败。";
-    res.status(statusCode).json(errorBody(code, message));
+    res.status(statusCode).json(errorBody(code, message, {
+      ...(error?.recoverableSession === true ? { recoverableSession: true } : {}),
+    }));
   });
 
   return app;

@@ -1,0 +1,120 @@
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import test from "node:test";
+
+const [taskpaneHtml, taskpaneJs, taskpaneCss, manifest, historyPreview] = await Promise.all([
+  readFile(new URL("../src/taskpane/taskpane.html", import.meta.url), "utf8"),
+  readFile(new URL("../src/taskpane/taskpane.js", import.meta.url), "utf8"),
+  readFile(new URL("../src/taskpane/taskpane.css", import.meta.url), "utf8"),
+  readFile(new URL("../manifest.xml", import.meta.url), "utf8"),
+  readFile(new URL("../src/taskpane/history-preview.js", import.meta.url), "utf8"),
+]);
+
+test("任务窗格不再提供图片附件入口，并优先单行展示控制条", () => {
+  assert.doesNotMatch(taskpaneHtml, /id="(?:image-input|image-button|attachment-list)"/);
+  assert.doesNotMatch(taskpaneJs, /prepareImageFile|addSelectedImages|clipboardData\?\.files/);
+  assert.match(taskpaneCss, /\.composer-toolbar\s*\{[\s\S]*grid-template-columns:\s*minmax\(0,\s*1fr\)\s+auto;/);
+  assert.match(taskpaneCss, /\.model-anchor\s*\{[\s\S]*max-width:\s*164px;/);
+  assert.doesNotMatch(taskpaneCss, /\.empty-state\s*\{[\s\S]*height:\s*100%/);
+});
+
+test("协议选择在右侧按模型示例提示", () => {
+  assert.match(taskpaneHtml, /class="protocol-field"/);
+  assert.match(taskpaneHtml, /id="protocol-model-list"/);
+  assert.match(taskpaneJs, /"openai-responses": \["GPT-5", "GPT-4\.1", "o3", "o4-mini"\]/);
+  assert.match(taskpaneJs, /"openai-chat-completions": \["Qwen3", "DeepSeek-V3", "GLM-4", "Kimi K2"\]/);
+  assert.match(taskpaneJs, /"anthropic-messages": \["Claude Opus", "Claude Sonnet", "Claude Haiku"\]/);
+  assert.match(taskpaneJs, /"google-gemini": \["Gemini 2\.5 Pro", "Gemini 2\.5 Flash", "Gemini Flash-Lite"\]/);
+  assert.match(taskpaneJs, /renderSettingsProtocols[\s\S]*renderProtocolModelExamples\(\)/);
+  assert.match(taskpaneJs, /elements\.apiProtocol\.addEventListener\("change", renderProtocolModelExamples\)/);
+  assert.match(taskpaneCss, /\.protocol-field\s*\{[\s\S]*grid-template-columns:\s*minmax\(0, 1fr\) minmax\(0, 1\.18fr\);/);
+  assert.match(taskpaneCss, /@media \(max-width: 439px\) \{[\s\S]*\.protocol-field\s*\{[\s\S]*grid-template-columns:\s*1fr;/);
+});
+
+test("模型配置按能力目录回填上下文，思考等级保持自动只读", () => {
+  assert.match(taskpaneHtml, /for="settings-effort">思考等级（自动）</);
+  assert.match(taskpaneHtml, /id="settings-effort" name="reasoningEffort" disabled/);
+  assert.match(taskpaneJs, /function applySettingsModelContextWindow\(\)/);
+  assert.match(taskpaneJs, /elements\.contextWindow\.value = String\(entry\.contextWindow\)/);
+  assert.match(taskpaneJs, /自动（提供方默认）/);
+  assert.match(taskpaneJs, /elements\.settingsEffort\.disabled = true;/);
+  assert.match(taskpaneJs, /elements\.settingsModel\.addEventListener\("change", \(\) => \{[\s\S]*applySettingsModelContextWindow\(\);/);
+  assert.doesNotMatch(taskpaneJs, /reasoningEffort:\s*elements\.settingsEffort\.value/);
+});
+
+test("流式任务在动作完成后重新定位最终助手消息", () => {
+  assert.match(taskpaneJs, /history\.finalizeMessage\(messageId, text(?:, \{ preservePrefixLength \})?\)/);
+});
+
+test("多步骤流式终态保留较早模型步骤的文字", () => {
+  assert.match(taskpaneJs, /let streamingAssistantStepTextLength = 0;/);
+  assert.match(taskpaneJs, /case "tool_pending":\s*streamingAssistantStepTextLength = 0;/);
+  assert.match(taskpaneJs, /case "model_step_boundary":\s*streamingAssistantStepTextLength = 0;/);
+  assert.match(taskpaneJs, /history\.finalizeMessage\(messageId, text, \{ preservePrefixLength \}\)/);
+});
+
+test("流式重连会撤销当前尝试的文字后缀并显示重连进度", () => {
+  assert.match(taskpaneJs, /case "stream_reset":\s*resetStreamingAssistant\(event\.discardTextLength\)/);
+  assert.match(taskpaneJs, /case "provider_reconnecting":\s*\{/);
+  assert.match(taskpaneJs, /网络连接已中断/);
+  assert.match(taskpaneJs, /case "assistant_delta":\s*elements\.runStatus\.textContent = ""/);
+  assert.match(taskpaneJs, /case "run_error":[\s\S]*?elements\.runStatus\.textContent = ""/);
+  assert.match(taskpaneJs, /case "run_stopped":[\s\S]*?elements\.runStatus\.textContent = ""/);
+});
+
+test("窄任务窗格让动作控件换行而不声明不支持的默认宽度", () => {
+  assert.match(taskpaneCss, /@media \(max-width: 439px\)[\s\S]*?\.composer-toolbar\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\);/);
+  assert.match(taskpaneCss, /@media \(max-width: 439px\)[\s\S]*?\.action-controls\s*\{[\s\S]*?justify-content:\s*flex-end;/);
+  assert.doesNotMatch(manifest, /RequestedWidth|<Width>/);
+});
+
+test("任务窗格恢复并单独持久化审批偏好", () => {
+  assert.match(taskpaneJs, /saveApprovalMode: \(approvalMode\) => requestJson\("\/api\/settings\/approval-mode"/);
+  assert.match(taskpaneJs, /setApprovalMode\(configState\.settings\.approvalMode\)/);
+  assert.match(taskpaneJs, /async function persistApprovalMode\(mode\)/);
+  assert.match(taskpaneJs, /setApprovalMode\(previousMode\)/);
+  assert.match(taskpaneJs, /approvalModeSaving/);
+  assert.match(taskpaneJs, /message === "" \|\| runner\.running \|\| approvalModeSaving \|\| !configState/);
+});
+
+test("任务窗格启动时探测提供方连通性，并同步模型和设置状态", () => {
+  assert.match(taskpaneJs, /probeProviderConnectivity: \(\) => requestJson\("\/api\/provider-connectivity", \{ method: "POST", body: \{\} \}\)/);
+  assert.match(taskpaneJs, /let providerProbeId = 0;/);
+  assert.match(taskpaneJs, /async function refreshProviderConnectivity\(\)/);
+  assert.match(taskpaneJs, /for \(const button of \[elements\.modelButton, elements\.settingsButton\]\) \{[\s\S]*?button\.dataset\.providerConnectivity = state;/);
+  assert.match(taskpaneJs, /async function saveSettings\(event\) \{[\s\S]*?void refreshProviderConnectivity\(\);/);
+  assert.match(taskpaneJs, /async function initializePreview\(\) \{[\s\S]*?await refreshProviderConnectivity\(\);/);
+  assert.match(taskpaneJs, /async function initializeExcel\(info\) \{[\s\S]*?configResult\.status === "fulfilled"\) await refreshProviderConnectivity\(\);/);
+  assert.match(taskpaneJs, /async function initializeLegacy\(\) \{[\s\S]*?await refreshProviderConnectivity\(\);/);
+  assert.match(taskpaneCss, /#model-button\[data-provider-connectivity="ready"\],[\s\S]*?#settings-button\[data-provider-connectivity="ready"\]/);
+  assert.match(taskpaneCss, /#model-button\[data-provider-connectivity="error"\],[\s\S]*?#settings-button\[data-provider-connectivity="error"\]/);
+  assert.match(taskpaneCss, /#model-button\[data-provider-connectivity="ready"\] > img,[\s\S]*?#settings-button\[data-provider-connectivity="ready"\] > img\s*\{[\s\S]*?filter:/);
+  assert.match(taskpaneCss, /#model-button\[data-provider-connectivity="error"\] > img,[\s\S]*?#settings-button\[data-provider-connectivity="error"\] > img\s*\{[\s\S]*?filter:/);
+});
+
+test("对话按角色使用三分之二宽气泡，并把连续动作收束为带箭头的居中流程", () => {
+  assert.match(taskpaneCss, /\.message\s*\{[\s\S]*max-inline-size:\s*66\.667%;/);
+  assert.match(taskpaneCss, /\.message\s*\{[\s\S]*border-radius:\s*18px;/);
+  assert.match(taskpaneCss, /\.message\.user\s*\{[\s\S]*margin-left:\s*auto;/);
+  assert.match(taskpaneCss, /\.message\.assistant\s*\{[\s\S]*margin-right:\s*auto;/);
+  assert.match(taskpaneCss, /\.action-flow\s*\{[\s\S]*justify-items:\s*center;/);
+  assert.match(taskpaneCss, /\.action-flow-step\.message\.notice\s*\{[\s\S]*border-radius:\s*999px;/);
+  assert.match(taskpaneCss, /\.action-flow-arrow\s*\{[\s\S]*rotate\(180deg\)/);
+  assert.match(taskpaneJs, /function createActionFlow\(entries\)/);
+  assert.match(taskpaneJs, /createIcon\("\/assets\/fluent\/arrow-up\.svg"\)/);
+  assert.match(taskpaneJs, /visibleMessages\[index \+ 1\]\?\.role === "notice"/);
+});
+
+test("操作记录提供内存中的表格预览，不改变或保存工作簿", () => {
+  assert.match(taskpaneHtml, /id="history-preview"/);
+  assert.match(taskpaneHtml, /id="history-preview-body"/);
+  assert.match(taskpaneJs, /let selectedHistoryActivityIndex = null;/);
+  assert.match(taskpaneJs, /selectedHistoryActivityIndex = entry\.index;/);
+  assert.match(taskpaneJs, /elements\.historyPreview\.hidden = !entry;/);
+  assert.match(taskpaneJs, /仅预览，不会修改或保存工作簿/);
+  assert.match(taskpaneJs, /captureToolPreview,/);
+  assert.match(taskpaneCss, /\.history-preview\s*\{/);
+  assert.match(taskpaneCss, /\.history-preview-body\s*\{[\s\S]*?overflow: auto;/);
+  assert.match(historyPreview, /getImage\(\)/);
+  assert.doesNotMatch(historyPreview, /fetch\(|localStorage|sessionStorage|\.values\s*=/);
+});

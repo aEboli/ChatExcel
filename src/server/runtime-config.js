@@ -14,12 +14,14 @@ import {
   protocolOptions,
   protocolReasoningEfforts,
 } from "./protocols.js";
+import { resolveOfficialModelCapabilities } from "./model-capability-catalog.js";
 import { DEFAULT_MAX_STEPS, normalizeMaxSteps } from "./limits.js";
-import { SettingsStore } from "./settings-store.js";
+import { DEFAULT_APPROVAL_MODE, isApprovalMode, SettingsStore } from "./settings-store.js";
 
 const MODEL_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$/;
 const MAX_API_KEY_LENGTH = 8_192;
 const MODEL_DISCOVERY_TIMEOUT_MS = 20_000;
+const PROVIDER_CONNECTIVITY_TIMEOUT_MS = 10_000;
 
 export class RuntimeConfigError extends Error {
   constructor(code, message, statusCode = 400, options = {}) {
@@ -39,7 +41,7 @@ function validateModelId(value) {
 }
 
 function validateApiKey(value) {
-  if (typeof value !== "string" || value.trim() === "" || value.length > MAX_API_KEY_LENGTH) {
+  if (typeof value !== "string" || value.trim() === "" || value.length > MAX_API_KEY_LENGTH || /[\r\n\0]/.test(value)) {
     throw new RuntimeConfigError("API_KEY_INVALID", "请输入有效的 API Key。" );
   }
   return value.trim();
@@ -65,6 +67,13 @@ function validateProtocol(value) {
       cause: error,
     });
   }
+}
+
+function validateApprovalMode(value) {
+  if (!isApprovalMode(value)) {
+    throw new RuntimeConfigError("APPROVAL_MODE_INVALID", "审批模式只能是需要审批或无需审批。" );
+  }
+  return value;
 }
 
 function uniqueEfforts(values) {
@@ -98,6 +107,40 @@ function modelReasoningMetadata(model) {
   return [];
 }
 
+function modelContextWindowMetadata(model) {
+  const candidates = [model?.inputTokenLimit, model?.context_window, model?.contextWindow];
+  return candidates.find((value) => Number.isSafeInteger(value) && value > 0) ?? null;
+}
+
+function modelCatalogEntry(protocol, id, model) {
+  const official = resolveOfficialModelCapabilities(protocol, id);
+  if (official) {
+    return {
+      id,
+      contextWindow: official.contextWindow,
+      contextSource: "official",
+      reasoningEfforts: official.reasoningEfforts,
+      reasoningMode: official.reasoningMode,
+      reasoningSource: "official",
+      defaultReasoningEffort: official.defaultReasoningEffort,
+      capabilityReference: official.reference,
+      capabilityReferences: official.references,
+    };
+  }
+
+  const declaredEfforts = modelReasoningMetadata(model);
+  const reasoningEfforts = declaredEfforts.length > 0 ? declaredEfforts : inferEfforts(protocol, id);
+  const contextWindow = modelContextWindowMetadata(model);
+  return {
+    id,
+    reasoningEfforts,
+    reasoningMode: "levels",
+    reasoningSource: declaredEfforts.length > 0 ? "provider" : "inferred",
+    defaultReasoningEffort: reasoningEfforts[0] ?? null,
+    ...(contextWindow ? { contextWindow, contextSource: "provider" } : {}),
+  };
+}
+
 export function parseModelCatalog(payload, protocol = DEFAULT_PROTOCOL) {
   const entries = Array.isArray(payload?.data)
     ? payload.data
@@ -119,20 +162,7 @@ export function parseModelCatalog(payload, protocol = DEFAULT_PROTOCOL) {
     if (typeof rawId !== "string") continue;
     const id = rawId.trim().replace(/^models\//i, "");
     if (!MODEL_ID_PATTERN.test(id)) continue;
-    const declaredEfforts = typeof entry === "object" ? modelReasoningMetadata(entry) : [];
-    const contextWindow = Number.isSafeInteger(entry?.inputTokenLimit)
-      ? entry.inputTokenLimit
-      : Number.isSafeInteger(entry?.context_window)
-        ? entry.context_window
-        : Number.isSafeInteger(entry?.contextWindow)
-          ? entry.contextWindow
-        : null;
-    catalog.set(id, {
-      id,
-      reasoningEfforts: declaredEfforts.length > 0 ? declaredEfforts : inferEfforts(normalizedProtocol, id),
-      reasoningSource: declaredEfforts.length > 0 ? "provider" : "inferred",
-      ...(contextWindow ? { contextWindow } : {}),
-    });
+    catalog.set(id, modelCatalogEntry(normalizedProtocol, id, entry));
   }
   if (catalog.size === 0) {
     throw new RuntimeConfigError("MODELS_EMPTY", "模型接口没有返回可用的模型 ID。", 502);
@@ -158,15 +188,18 @@ function addCurrentModel(catalog, config) {
   const models = Array.isArray(catalog) ? catalog.map((entry) => ({ ...entry })) : [];
   let current = models.find((entry) => entry.id === config.model);
   if (!current) {
-    current = {
-      id: config.model,
-      reasoningEfforts: inferEfforts(protocolFromConfig(config), config.model),
-      reasoningSource: "inferred",
-    };
+    current = modelCatalogEntry(protocolFromConfig(config), config.model);
     models.unshift(current);
   }
-  if (config.reasoningEffort && !current.reasoningEfforts.includes(config.reasoningEffort)) {
+  if (
+    config.reasoningEffort &&
+    current.reasoningSource !== "official" &&
+    !current.reasoningEfforts.includes(config.reasoningEffort)
+  ) {
     current.reasoningEfforts = [...current.reasoningEfforts, config.reasoningEffort];
+  }
+  if (!("defaultReasoningEffort" in current)) {
+    current.defaultReasoningEffort = current.reasoningEfforts[0] ?? null;
   }
   return models;
 }
@@ -190,6 +223,7 @@ export class RuntimeConfigStore {
     systemLoader = loadCodexConfig,
     fetchImpl = globalThis.fetch,
     discoveryTimeoutMs = MODEL_DISCOVERY_TIMEOUT_MS,
+    connectivityTimeoutMs = PROVIDER_CONNECTIVITY_TIMEOUT_MS,
     settingsStore = new SettingsStore(),
   } = {}) {
     if (typeof systemLoader !== "function" || typeof fetchImpl !== "function") {
@@ -201,6 +235,7 @@ export class RuntimeConfigStore {
     this.systemLoader = systemLoader;
     this.fetchImpl = fetchImpl;
     this.discoveryTimeoutMs = discoveryTimeoutMs;
+    this.connectivityTimeoutMs = connectivityTimeoutMs;
     this.settingsStore = settingsStore;
     this.mode = "system";
     this.customConfig = null;
@@ -208,6 +243,7 @@ export class RuntimeConfigStore {
     this.lastCustomDiscovery = null;
     this.settingsError = null;
     this.maxSteps = DEFAULT_MAX_STEPS;
+    this.approvalMode = DEFAULT_APPROVAL_MODE;
     this.ready = this.#restoreSettings();
   }
 
@@ -227,6 +263,12 @@ export class RuntimeConfigStore {
       this.settingsError = error;
       this.maxSteps = DEFAULT_MAX_STEPS;
     }
+    try {
+      this.approvalMode = validateApprovalMode(persisted?.approvalMode ?? DEFAULT_APPROVAL_MODE);
+    } catch (error) {
+      this.settingsError ??= error;
+      this.approvalMode = DEFAULT_APPROVAL_MODE;
+    }
     const custom = persisted?.custom;
     if (!custom || typeof custom !== "object") return;
     let protocol;
@@ -241,13 +283,8 @@ export class RuntimeConfigStore {
       const catalog = rawCatalog.length > 0
         ? parseModelCatalog({ models: rawCatalog }, protocol)
         : [];
-      const entry = catalog.find((item) => item.id === model) ?? {
-        id: model,
-        reasoningEfforts: inferEfforts(protocol, model),
-        reasoningSource: "inferred",
-      };
-      const reasoningEffort = custom.reasoningEffort ?? entry.reasoningEfforts[0] ?? null;
-      if (reasoningEffort !== null && !entry.reasoningEfforts.includes(reasoningEffort)) return;
+      const entry = catalog.find((item) => item.id === model) ?? modelCatalogEntry(protocol, model);
+      const reasoningEffort = entry.defaultReasoningEffort ?? null;
       this.customConfig = this.#makeCustomConfig({
         protocol,
         baseUrl,
@@ -279,6 +316,7 @@ export class RuntimeConfigStore {
       reasoningEffort,
       verbosity: null,
       contextWindow,
+      contextWindowConfigured: true,
       token,
       tokenSource: "encrypted-settings",
     });
@@ -299,6 +337,7 @@ export class RuntimeConfigStore {
     await this.settingsStore.save({
       useSystemConfig: this.mode === "system",
       maxSteps: this.maxSteps,
+      approvalMode: this.approvalMode,
       custom,
     });
   }
@@ -320,8 +359,15 @@ export class RuntimeConfigStore {
     if (!modelEntry) {
       throw new RuntimeConfigError("MODEL_NOT_AVAILABLE", "所选模型不在当前可用模型列表中。" );
     }
+    const isCurrentModel = model === normalizedConfig.model;
     const reasoningEffort = options.reasoningEffort === undefined
-      ? normalizedConfig.reasoningEffort
+      ? modelEntry.reasoningSource === "official"
+        ? modelEntry.defaultReasoningEffort
+        : modelEntry.reasoningMode === "provider-default"
+          ? null
+          : isCurrentModel
+            ? normalizedConfig.reasoningEffort ?? modelEntry.defaultReasoningEffort
+            : modelEntry.defaultReasoningEffort
       : options.reasoningEffort;
     if (
       reasoningEffort !== null &&
@@ -336,7 +382,11 @@ export class RuntimeConfigStore {
       ...normalizedConfig,
       model,
       reasoningEffort,
-      contextWindow: normalizedConfig.contextWindow ?? DEFAULT_CONTEXT_WINDOW,
+      contextWindow: isCurrentModel && (
+        modelEntry.contextSource !== "official" || normalizedConfig.contextWindowConfigured === true
+      )
+        ? normalizedConfig.contextWindow ?? modelEntry.contextWindow ?? DEFAULT_CONTEXT_WINDOW
+        : modelEntry.contextWindow ?? normalizedConfig.contextWindow ?? DEFAULT_CONTEXT_WINDOW,
     });
   }
 
@@ -353,7 +403,10 @@ export class RuntimeConfigStore {
         protocol: config.protocol,
         protocolLabel: getProtocolDefinition(config.protocol).label,
         reasoningEfforts: currentModel.reasoningEfforts,
+        reasoningMode: currentModel.reasoningMode,
         reasoningSource: currentModel.reasoningSource,
+        defaultReasoningEffort: currentModel.defaultReasoningEffort,
+        contextSource: currentModel.contextSource ?? null,
       },
       models,
       protocols: protocolOptions(),
@@ -365,6 +418,7 @@ export class RuntimeConfigStore {
         contextWindow: custom?.contextWindow ?? config.contextWindow ?? DEFAULT_CONTEXT_WINDOW,
         reasoningEffort: custom?.reasoningEffort ?? null,
         maxSteps: this.maxSteps,
+        approvalMode: this.approvalMode,
         credentialConfigured: Boolean(custom?.token),
         models: cloneCatalog(this.catalogs.custom),
       },
@@ -418,10 +472,7 @@ export class RuntimeConfigStore {
     if (!modelEntry) {
       throw new RuntimeConfigError("MODEL_NOT_AVAILABLE", "请选择获取到的模型 ID。" );
     }
-    const reasoningEffort = settings.reasoningEffort ?? modelEntry.reasoningEfforts[0] ?? null;
-    if (reasoningEffort !== null && !modelEntry.reasoningEfforts.includes(reasoningEffort)) {
-      throw new RuntimeConfigError("REASONING_EFFORT_UNSUPPORTED", "所选模型不支持当前思考等级。" );
-    }
+    const reasoningEffort = modelEntry.defaultReasoningEffort ?? null;
     const contextWindow = validateContextWindow(settings.contextWindow);
     this.customConfig = this.#makeCustomConfig({
       protocol,
@@ -438,8 +489,64 @@ export class RuntimeConfigStore {
     return this.getPublicState();
   }
 
+  async updateApprovalMode(approvalMode) {
+    await this.ready;
+    const nextMode = validateApprovalMode(approvalMode);
+    const previousMode = this.approvalMode;
+    this.approvalMode = nextMode;
+    try {
+      await this.#persistState();
+    } catch (error) {
+      this.approvalMode = previousMode;
+      throw error;
+    }
+    return this.getPublicState();
+  }
+
   getMaxSteps() {
     return this.maxSteps;
+  }
+
+  async probeCurrentProvider() {
+    await this.ready;
+    try {
+      const config = await this.loadConfig();
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), this.connectivityTimeoutMs);
+      timeout.unref?.();
+      let response;
+      try {
+        response = await this.fetchImpl(buildModelsUrl(config.baseUrl, config.protocol), {
+          method: "GET",
+          headers: {
+            ...protocolAuthHeaders(config.protocol, config.token),
+            Accept: "application/json",
+          },
+          cache: "no-store",
+          signal: controller.signal,
+        });
+      } catch (error) {
+        return {
+          status: "failed",
+          code: error?.name === "AbortError" ? "PROVIDER_TIMEOUT" : "PROVIDER_UNAVAILABLE",
+        };
+      } finally {
+        clearTimeout(timeout);
+      }
+
+      if (!response.ok) return { status: "failed", code: "PROVIDER_HTTP_ERROR" };
+      try {
+        parseModelCatalog(await response.json(), config.protocol);
+      } catch {
+        return { status: "failed", code: "PROVIDER_RESPONSE_INVALID" };
+      }
+      return { status: "connected" };
+    } catch (error) {
+      const code = typeof error?.code === "string" && /^[A-Z][A-Z0-9_]{0,63}$/.test(error.code)
+        ? error.code
+        : "PROVIDER_UNAVAILABLE";
+      return { status: "failed", code };
+    }
   }
 
   async discoverModels(settings = {}) {

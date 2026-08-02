@@ -1,6 +1,6 @@
 {
   "name": "chatexcel",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "private": true,
   "description": "复用系统 Codex 配置或自定义模型接口的 ChatExcel 加载项",
   "type": "module",
@@ -16,6 +16,7 @@
     "dev": "node --watch src/server/index.js",
     "start:local": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start.ps1",
     "stop:local": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/stop.ps1",
+    "test:service-recovery": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-service-recovery.ps1",
     "certs:install": "office-addin-dev-certs install",
     "certs:verify": "node scripts/verify-certs.mjs",
     "certs:uninstall": "office-addin-dev-certs uninstall",

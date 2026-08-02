@@ -18,29 +18,39 @@ internal static class Program
         "(?ix)(authorization\\s*[:=]\\s*bearer\\s+|bearer\\s+|x-api-key\\s*[:=]\\s*|x-goog-api-key\\s*[:=]\\s*|api[_-]?key\\s*[:=]\\s*|token\\s*[:=]\\s*)[^\\s,;\\\"'}]+",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
+    [STAThread]
     public static int Main(string[] args)
     {
         LauncherLog? log = null;
         try
         {
-            if (args.Length > 1 || (args.Length == 1 && args[0] is not ("--diagnose" or "--help")))
+            WorkbookLaunchRequest request;
+            try
             {
-                throw new LauncherException("只支持 --diagnose 或 --help 参数。", "参数");
+                request = WorkbookLaunchRequest.Parse(args);
+            }
+            catch (LauncherInputException error)
+            {
+                throw new LauncherException(error.Message, "参数");
             }
 
             var appRoot = ResolveAppRoot();
             log = new LauncherLog(appRoot);
-            log.Write($"启动器开始，模式={(args.Length == 0 ? "start" : args[0])}，应用目录={appRoot}");
+            log.Write($"启动器开始，模式={request.Mode}，应用目录={appRoot}");
 
-            if (args.Length == 1 && args[0] == "--help")
+            if (request.Mode == WorkbookLaunchMode.Help)
             {
-                MessageBox(IntPtr.Zero, "双击启动 ChatExcel。\n\n--diagnose 只检查发行目录，不启动服务或 Excel。", AppName, MessageBoxInformation);
+                MessageBox(
+                    IntPtr.Zero,
+                    "双击启动 ChatExcel。\n\n把 .xls 拖到启动器：使用内置原生引擎。\n把 .xlsx、.xlsm 或 .xlsb 拖到启动器：使用 Office 加载项。\n\n--diagnose 只检查发行目录，不启动服务或 Excel。",
+                    AppName,
+                    MessageBoxInformation);
                 return 0;
             }
 
             var nodePath = ResolveNode(appRoot);
             ValidateResources(appRoot);
-            if (args.Length == 1 && args[0] == "--diagnose")
+            if (request.Mode == WorkbookLaunchMode.Diagnose)
             {
                 Diagnose(appRoot, nodePath, log);
                 log.Write("诊断通过");
@@ -49,8 +59,17 @@ internal static class Program
 
             EnsureCertificate(appRoot, nodePath, log);
             RunService(appRoot, nodePath, log);
-            RunSideload(appRoot, nodePath, log);
-            log.Write("ChatExcel 服务和 Excel 侧载流程已启动");
+            if (request.Mode == WorkbookLaunchMode.NativeXls)
+            {
+                RunNativeXls(request.WorkbookPath!, log);
+                log.Write("ChatExcel 原生 XLS 窗格已关闭，Excel 工作簿保持由用户控制");
+                return 0;
+            }
+
+            RunSideload(appRoot, nodePath, log, request.WorkbookPath);
+            log.Write(request.Mode == WorkbookLaunchMode.OfficeAddIn
+                ? "ChatExcel 服务已启动，现代工作簿已交给 Office 加载项"
+                : "ChatExcel 服务和 Excel 侧载流程已启动");
             return 0;
         }
         catch (LauncherException error)
@@ -123,6 +142,7 @@ internal static class Program
         {
             "manifest.xml",
             "scripts/start.ps1",
+            "scripts/service-supervisor.ps1",
             "scripts/sideload.mjs",
             "scripts/verify-certs.mjs",
             "src/server/index.js",
@@ -160,6 +180,16 @@ internal static class Program
                 verify.Error);
         }
         log.Write($"Node={version.Output.Trim()}，证书=valid");
+    }
+
+    private static void RunNativeXls(string workbookPath, LauncherLog log)
+    {
+        var sessionId = LegacyProtocol.CreateSessionId();
+        log.Write("已选择原生 XLS 引擎，正在打开专用 Excel 实例和 ChatEx 窗格");
+        Application.EnableVisualStyles();
+        Application.SetCompatibleTextRenderingDefault(false);
+        using var host = new LegacyWorkbookHost(workbookPath, sessionId);
+        Application.Run(host);
     }
 
     private static void EnsureCertificate(string appRoot, string nodePath, LauncherLog log)
@@ -204,9 +234,12 @@ internal static class Program
         log.Write("本地服务健康检查通过");
     }
 
-    private static void RunSideload(string appRoot, string nodePath, LauncherLog log)
+    private static void RunSideload(string appRoot, string nodePath, LauncherLog log, string? workbookPath)
     {
-        var result = RunNode(appRoot, nodePath, "scripts/sideload.mjs", Array.Empty<string>(), TimeSpan.FromMinutes(2));
+        var arguments = string.IsNullOrWhiteSpace(workbookPath)
+            ? Array.Empty<string>()
+            : new[] { "--workbook", workbookPath };
+        var result = RunNode(appRoot, nodePath, "scripts/sideload.mjs", arguments, TimeSpan.FromMinutes(2));
         if (result.ExitCode != 0)
         {
             throw new LauncherException(
@@ -222,8 +255,8 @@ internal static class Program
         var powershell = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
         if (!File.Exists(powershell)) powershell = "powershell.exe";
         var arguments = new[] { "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath };
-        // start.ps1 launches the long-lived Node server. Do not capture the
-        // PowerShell streams here: the server can inherit those handles and
+        // start.ps1 launches a long-lived recovery supervisor. Do not capture the
+        // PowerShell streams here: its service child can inherit those handles and
         // keep ReadToEndAsync waiting after PowerShell itself has exited.
         return RunProcess(powershell, arguments, appRoot, Path.GetDirectoryName(nodePath), TimeSpan.FromMinutes(2), captureOutput: false);
     }
