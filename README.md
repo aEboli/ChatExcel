@@ -39,6 +39,17 @@ ChatExcel places the agent beside the sheet and gives it a narrow, auditable Exc
 
 `0.0.2` adds encrypted current-workbook crash recovery, supervised local-service recovery, correlated tool-error repair, read-only history previews, and a native companion path for existing `.xls` workbooks while keeping the original legacy file format under Excel's control.
 
+## Current `main` Development Line
+
+The current `main` branch builds on `v0.0.2` with a stricter workbook-mutation boundary:
+
+- Value, formula, format, number-format, clear, sort, table, and chart-source ranges are measured before execution; targets over `5,000` cells return a structured error without touching the workbook.
+- Autofit is limited by the requested row or column dimensions, and chart anchors accept only bounded cell or rectangular ranges.
+- Successful mutations return auditable `impact` and `verification` summaries; the Office.js and native `.xls` engines share the same error codes and result fields.
+- Agent instructions require read-before-write, formula-first results when calculable, and final inspection of verification summaries and formula errors; the `Needs approval` and `No approval` user modes remain unchanged.
+
+These changes are synchronized to GitHub `main` but are not a new release tag; `v0.0.2` remains the current formal release.
+
 ## Core Workflow
 
 1. Open the ChatExcel task pane from the `ChatEx` ribbon group.
@@ -54,6 +65,7 @@ ChatExcel places the agent beside the sheet and gives it a narrow, auditable Exc
 - Workbook-aware label showing `file-name-sheet-name`.
 - Read, write, formula, formatting, number-format, autofit, clear, worksheet, table, chart, and sort tools.
 - Common A1 addresses including cells, rectangular ranges, absolute references, whole columns such as `N:R`, and whole rows such as `1:3`.
+- Unified impact protection runs before range mutations and reads back actual results afterward; `impact` and `verification` fields support auditing and follow-up repair.
 - Automatic recovery from correlated model tool errors across Responses, Chat Completions, Anthropic Messages, and Gemini.
 - Compact, collapsible activity history above the conversation.
 - One task-level activity group containing every tool step, collapsed by default with step-name previews.
@@ -68,7 +80,7 @@ ChatExcel places the agent beside the sheet and gives it a narrow, auditable Exc
 
 ## A Small Footer Detail
 
-The task pane has a quiet footer easter egg: hover or focus the `ChatEx` mark to reveal a tiny baseline scene, then click it to keep the motion awake. The spatial idea is inspired by [Detail's footer easter egg](https://detail.design/zh/detail/footer-easter-egg), while the actual scene is drawn locally with CSS so the add-in has no extra network dependency. Reduced-motion users get the same control without continuous movement.
+The task pane has a quiet footer easter egg: hover or focus the `ChatEx` mark to reveal a tiny baseline scene, then click it to keep the motion awake. The spatial idea is inspired by [Detail's footer easter egg](https://detail.design/zh/detail/footer-easter-egg), while the scene uses local CSS and `.webp` character assets shipped in the repository, with no extra network dependency. Reduced-motion users get the same control without continuous movement.
 
 ## Supported Protocols
 
@@ -204,6 +216,7 @@ Custom settings are stored in `%APPDATA%\\ChatExcel\\settings.json`. Non-secret 
 - The service binds only to `127.0.0.1` and validates the request `Host` and `Origin`.
 - The task pane never receives a plaintext or encrypted API key.
 - Provider errors are summarized with credentials redacted; request bodies and workbook data are not logged.
+- Upstream HTTP, SSE, and protocol errors pass through one redaction boundary so tokens, query credentials, and authentication headers cannot remain in the task pane, logs, or tool results.
 - `store: false` and equivalent provider-side stateless message histories are used where the protocol supports them. The crash-recovery exception stores only one current-workbook session in a DPAPI-encrypted local cache and never automatically resends a model request or executes an Excel action.
 - Excel mutations are limited to registered tools. Unknown tools and invalid arguments are not executed; correlated failures are returned to the agent for correction. Missing or duplicate call IDs, mismatched results, denied approval, cancellation, read-only workbooks, and the step limit remain enforced boundaries.
 - ChatExcel does not bypass protection, macros, VBA, Power Query, or PivotTable security boundaries.
@@ -215,10 +228,12 @@ npm run check
 npm test
 npm run validate:manifest
 npm audit --omit=dev
-openspec validate --changes --strict --no-interactive
+npm run check:launcher
+dotnet build tests/native-smoke/ChatExcel.NativeSmoke.csproj --configuration Release
+openspec validate --all --strict
 ```
 
-The current automated suite covers configuration parsing, DPAPI storage boundaries (with isolated test doubles), endpoint normalization, all four protocol adapters and their SSE accumulators, recoverable failed tool results, mixed valid/invalid calls, whole-row and whole-column ranges, compatible client image conversion, tool loops, session limits, HTTP origin checks, task-pane layout contracts, and add-in manifest validation. Browser acceptance was performed at 400x900 and 320x700, including the default-collapsed task group, group expansion, the single send/stop control, settings persistence, the compact idle state, auto-growing input, and no horizontal overflow. A real desktop-Excel long-running stream with a controllable fixture provider remains an external acceptance item.
+The current `main` has passed all `256/256` Node tests, JavaScript checks across `53` files, the Launcher Release build, and strict OpenSpec validation. A real Microsoft Excel `.xls` smoke run also confirmed that the source hash stays unchanged, the format code remains `56`, and range policy, write-after-read verification, cross-workbook isolation, table rollback, and cancelled-close behavior hold. The automated suite also covers configuration parsing, DPAPI storage boundaries (with isolated test doubles), endpoint normalization, all four protocol adapters and their SSE accumulators, recoverable failed tool results, mixed valid/invalid calls, whole-row and whole-column ranges, compatible client image conversion, tool loops, session limits, HTTP origin checks, task-pane layout contracts, and add-in manifest validation. Browser acceptance was performed at 400x900 and 320x700, including the default-collapsed task group, group expansion, the single send/stop control, settings persistence, the compact idle state, auto-growing input, and no horizontal overflow. A real desktop-Excel long-running stream with a controllable fixture provider remains an external acceptance item.
 
 ## Limitations
 
