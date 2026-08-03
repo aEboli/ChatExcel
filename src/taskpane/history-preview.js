@@ -85,19 +85,27 @@ export function historyPreviewTarget(details) {
 
 export function historyPreviewFallback({ call, tool, arguments: args = {}, output = {} }) {
   const target = targetFromCall({ call, arguments: args, output });
+  const label = tool?.label ?? call?.name ?? "操作";
+  if (output?.ok === false) {
+    return {
+      kind: "summary",
+      worksheet: target?.worksheet ?? null,
+      address: target?.address ?? null,
+      message: output?.error?.message ?? "该步骤未修改工作簿。",
+      label,
+    };
+  }
+
   const values = matrix(output?.values) ?? matrix(args.values);
   const formulas = matrix(output?.formulas) ?? matrix(args.formulas);
   const data = values ?? formulas;
-  const label = tool?.label ?? call?.name ?? "操作";
 
   if (!data) {
     return {
       kind: "summary",
       worksheet: target?.worksheet ?? null,
       address: target?.address ?? null,
-      message: output?.ok === false
-        ? output?.error?.message ?? "该步骤未修改工作簿。"
-        : "该步骤没有可显示的单元格快照。",
+      message: "该步骤没有可显示的单元格快照。",
       label,
     };
   }

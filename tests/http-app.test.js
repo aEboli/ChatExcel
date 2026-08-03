@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createServer, request } from "node:http";
 import test from "node:test";
 import { createApp } from "../src/server/http-app.js";
+import { APP_NAME, APP_VERSION } from "../src/shared/app-info.js";
 
 const fakeSecret = "integration-test-secret";
 
@@ -41,6 +42,9 @@ test("健康接口无需模型配置即可访问", async (t) => {
 
   assert.equal(response.status, 200);
   assert.equal(body.ok, true);
+  assert.equal(body.service, APP_NAME);
+  assert.equal(body.version, APP_VERSION);
+  assert.deepEqual(body.capabilities, ["office-addin", "native-xls"]);
   assert.equal(response.headers.get("x-powered-by"), null);
   assert.match(response.headers.get("content-security-policy"), /default-src 'self'/);
 });
@@ -322,6 +326,41 @@ test("Agent 接口把图片和模型选项传给会话管理器", async (t) => {
   assert.equal(captured.options.workbookBinding, "https://example.test/workbooks/budget.xlsx");
 });
 
+test("Agent 后续消息接口把工作簿绑定传给会话管理器", async (t) => {
+  let captured;
+  const baseUrl = await startServer(t, {
+    sessionManager: {
+      async addMessage(sessionId, message, options) {
+        captured = { sessionId, message, options };
+        return { sessionId, status: "completed", message: "ok" };
+      },
+    },
+  });
+  const response = await fetch(`${baseUrl}/api/sessions/session-http-binding-01/messages`, {
+    method: "POST",
+    headers: {
+      Origin: "https://localhost:3210",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      message: "继续分析",
+      workbookBinding: "document-url:C:/reports/copy.xlsx",
+    }),
+  });
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(captured, {
+    sessionId: "session-http-binding-01",
+    message: "继续分析",
+    options: {
+      attachments: undefined,
+      model: undefined,
+      reasoningEffort: undefined,
+      workbookBinding: "document-url:C:/reports/copy.xlsx",
+    },
+  });
+});
+
 test("会话恢复接口受同源保护、禁止缓存且只返回可见消息", async (t) => {
   const restoreCalls = [];
   const rawInput = "恢复接口不得返回的原始模型输入";
@@ -439,7 +478,7 @@ test("会话恢复心跳和清除接口使用同源保护且禁止缓存", async
         touchCalls.push({ sessionId, workbookBinding });
         return true;
       },
-      async cancel(sessionId) {
+      async clearRecoverySession(sessionId) {
         cancelCalls.push(sessionId);
       },
     },
@@ -473,6 +512,34 @@ test("会话恢复心跳和清除接口使用同源保护且禁止缓存", async
     workbookBinding: "workbook://budget",
   }]);
   assert.deepEqual(cancelCalls, ["session-recovery-http-02"]);
+});
+
+test("恢复快照无法确认删除时清除接口返回可重试错误", async (t) => {
+  const baseUrl = await startServer(t, {
+    sessionManager: {
+      async clearRecoverySession() {
+        const error = new Error("无法确认本地恢复记录已清除，请稍后重试。");
+        error.code = "RECOVERY_CLEAR_UNAVAILABLE";
+        error.statusCode = 503;
+        error.expose = true;
+        throw error;
+      },
+    },
+  });
+
+  const response = await fetch(`${baseUrl}/api/conversation-recovery/session-retry-01`, {
+    method: "DELETE",
+    headers: { Origin: "https://localhost:3210" },
+  });
+
+  assert.equal(response.status, 503);
+  assert.deepEqual(await response.json(), {
+    ok: false,
+    error: {
+      code: "RECOVERY_CLEAR_UNAVAILABLE",
+      message: "无法确认本地恢复记录已清除，请稍后重试。",
+    },
+  });
 });
 
 test("会话恢复心跳向任务窗格公开可安全处理的不可用状态", async (t) => {

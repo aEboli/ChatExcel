@@ -31,6 +31,16 @@ export class AgentSessionError extends Error {
   }
 }
 
+class RecoveryClearError extends Error {
+  constructor() {
+    super("无法确认本地恢复记录已清除，请稍后重试。");
+    this.name = "RecoveryClearError";
+    this.code = "RECOVERY_CLEAR_UNAVAILABLE";
+    this.statusCode = 503;
+    this.expose = true;
+  }
+}
+
 function validateAttachments(attachments) {
   if (attachments === undefined) return [];
   if (!Array.isArray(attachments)) {
@@ -339,6 +349,14 @@ function publicRecoveryTouchStatus(value) {
     : "missing";
 }
 
+function createDeferred() {
+  let resolve;
+  const promise = new Promise((complete) => {
+    resolve = complete;
+  });
+  return { promise, resolve };
+}
+
 export class SessionManager {
   constructor({
     responsesClient,
@@ -373,13 +391,14 @@ export class SessionManager {
     this.idleTtlMs = idleTtlMs;
     this.now = now;
     this.sessions = new Map();
+    this.finalizingSessions = new Map();
     this.sweepTimer = setInterval(() => this.cleanupExpired(), sweepIntervalMs);
     this.sweepTimer.unref?.();
   }
 
   async start(message, requestedId, options = {}, hooks = {}) {
     const sessionId = validateRequestedId(requestedId);
-    if (this.sessions.has(sessionId)) {
+    if (this.sessions.has(sessionId) || this.finalizingSessions.has(sessionId)) {
       throw new AgentSessionError("SESSION_EXISTS", "该会话 ID 已存在。", 409);
     }
 
@@ -402,6 +421,8 @@ export class SessionManager {
       recoveryNotice: null,
       suspendedForRecovery: false,
       cancelled: false,
+      recoveryUnavailable: false,
+      checkpointTail: Promise.resolve(),
     };
     this.sessions.set(sessionId, session);
 
@@ -419,7 +440,13 @@ export class SessionManager {
       throw new AgentSessionError("SESSION_BUSY", "当前会话仍在处理上一项操作。", 409);
     }
     const payload = validateUserPayload(message, options.attachments);
-    session.requestOptions = validateRequestOptions(options, session.requestOptions);
+    const requestOptions = validateRequestOptions(options, session.requestOptions);
+    const workbookBinding = this.#nextMessageWorkbookBinding(session, options);
+    if (session.workbookBinding !== workbookBinding && !session.workbookBinding && workbookBinding) {
+      session.lastPaneHeartbeatAt = this.now();
+    }
+    session.requestOptions = requestOptions;
+    session.workbookBinding = workbookBinding;
     session.streamSink = typeof hooks.onEvent === "function" ? hooks.onEvent : null;
     session.input.push(userInput(payload.message, payload.attachments));
     session.lastTouched = this.now();
@@ -488,9 +515,37 @@ export class SessionManager {
   }
 
   async cancel(sessionId) {
-    const session = this.sessions.get(sessionId) ?? null;
-    this.#removeSession(sessionId);
+    const session = this.#findSessionOrFinalization(sessionId);
+    if (session) {
+      const finalization = this.#trackFinalizingSession(session);
+      finalization.cancelling = true;
+      this.#stopSession(session);
+      if (this.sessions.get(sessionId) === session) this.sessions.delete(sessionId);
+      await this.#waitForCheckpoint(session);
+    }
+    const cleared = !session || session.workbookBinding
+      ? await this.#clearRecovery(sessionId, session?.workbookBinding ?? null)
+      : false;
+    if (session) this.#finishFinalizingSession(session);
+    return Boolean(session) || cleared;
+  }
+
+  async clearRecoverySession(sessionId) {
+    const session = this.#findSessionOrFinalization(sessionId);
+    if (session) {
+      const finalization = this.#trackFinalizingSession(session);
+      finalization.cancelling = true;
+      this.#stopSession(session);
+      await this.#waitForCheckpoint(session);
+    }
+
     const cleared = await this.#clearRecovery(sessionId, session?.workbookBinding ?? null);
+    if (!cleared) {
+      if (session) this.#finishFinalizingSession(session, { retain: true });
+      throw new RecoveryClearError();
+    }
+    if (session && this.sessions.get(sessionId) === session) this.sessions.delete(sessionId);
+    if (session) this.#finishFinalizingSession(session);
     return Boolean(session) || cleared;
   }
 
@@ -505,15 +560,25 @@ export class SessionManager {
       : session.state === "requesting"
         ? RECOVERY_PHASES.modelRequest
         : RECOVERY_PHASES.stable;
+    const checkpoint = this.#checkpoint(session, phase);
+    const finalization = this.#trackFinalizingSession(session);
     this.sessions.delete(sessionId);
-    await this.#checkpoint(session, phase);
-    session.abortController?.abort();
-    return true;
+    try {
+      await checkpoint;
+      session.abortController?.abort();
+      return true;
+    } finally {
+      if (!finalization.cancelling) this.#finishFinalizingSession(session);
+    }
   }
 
   async restore(workbookBinding) {
     const normalizedBinding = validateWorkbookBinding(workbookBinding);
     if (!normalizedBinding || !this.recoveryStore) return null;
+
+    if (await this.#waitForFinalizingWorkbook(normalizedBinding)) {
+      return { recovery: { status: "unavailable" } };
+    }
 
     const restored = await this.recoveryStore.restore({ workbookKey: normalizedBinding });
     if (restored?.status !== "available") {
@@ -522,6 +587,9 @@ export class SessionManager {
           status: typeof restored?.status === "string" ? restored.status : "missing",
         },
       };
+    }
+    if (await this.#waitForFinalizingSession(restored.sessionId)) {
+      return { recovery: { status: "unavailable" } };
     }
     const snapshot = restored.snapshot;
     let session;
@@ -580,6 +648,9 @@ export class SessionManager {
       return { status: "missing" };
     }
     const normalizedSessionId = sessionId.trim();
+    if (await this.#waitForFinalizingSession(normalizedSessionId)) {
+      return { status: "unavailable" };
+    }
     const session = this.sessions.get(normalizedSessionId);
     if (session) {
       if (session.workbookBinding !== normalizedBinding) return { status: "missing" };
@@ -639,56 +710,66 @@ export class SessionManager {
   }
 
   async #checkpoint(session, phase) {
+    if (session.cancelled) return false;
     session.recoveryPhase = phase;
     if (!this.recoveryStore || !session.workbookBinding) return false;
-    try {
-      await this.recoveryStore.save({
-        sessionId: session.id,
-        workbookKey: session.workbookBinding,
-        lastPaneHeartbeatAt: session.lastPaneHeartbeatAt,
-        snapshot: {
-          version: 1,
-          lastActiveAt: session.lastTouched,
-          workbook: { binding: session.workbookBinding },
-          session: {
-            id: session.id,
-            input: structuredClone(session.input),
-            requestOptions: structuredClone(session.requestOptions),
-            stepCount: session.stepCount,
-            state: session.state,
-            pendingCalls: structuredClone(session.pendingCalls),
-            lastTouched: session.lastTouched,
-            lastPaneHeartbeatAt: session.lastPaneHeartbeatAt,
-          },
-          recovery: {
-            phase,
-            notice: session.recoveryNotice,
-          },
-          presentation: visiblePresentation(session.input),
+
+    const checkpoint = {
+      sessionId: session.id,
+      workbookKey: session.workbookBinding,
+      lastPaneHeartbeatAt: session.lastPaneHeartbeatAt,
+      snapshot: {
+        version: 1,
+        lastActiveAt: session.lastTouched,
+        workbook: { binding: session.workbookBinding },
+        session: {
+          id: session.id,
+          input: structuredClone(session.input),
+          requestOptions: structuredClone(session.requestOptions),
+          stepCount: session.stepCount,
+          state: session.state,
+          pendingCalls: structuredClone(session.pendingCalls),
+          lastTouched: session.lastTouched,
+          lastPaneHeartbeatAt: session.lastPaneHeartbeatAt,
         },
-      });
-      if (session.recoveryUnavailable) {
-        session.recoveryUnavailable = false;
-        session.streamSink?.({ type: "recovery_available" });
+        recovery: {
+          phase,
+          notice: session.recoveryNotice,
+        },
+        presentation: visiblePresentation(session.input),
+      },
+    };
+    const persist = async () => {
+      if (session.cancelled) return false;
+      try {
+        await this.recoveryStore.save(checkpoint);
+        if (session.recoveryUnavailable) {
+          session.recoveryUnavailable = false;
+          session.streamSink?.({ type: "recovery_available" });
+        }
+        return true;
+      } catch {
+        if (!session.recoveryUnavailable) {
+          session.recoveryUnavailable = true;
+          session.streamSink?.({ type: "recovery_unavailable" });
+        }
+        return false;
       }
-      return true;
-    } catch {
-      if (!session.recoveryUnavailable) {
-        session.recoveryUnavailable = true;
-        session.streamSink?.({ type: "recovery_unavailable" });
-      }
-      return false;
-    }
+    };
+    const previous = session.checkpointTail ?? Promise.resolve();
+    const result = previous.then(persist, persist);
+    session.checkpointTail = result.catch(() => {});
+    return result;
   }
 
   async #clearRecovery(sessionId, workbookBinding) {
-    if (!this.recoveryStore) return false;
+    if (!this.recoveryStore) return true;
     try {
       const cleared = await this.recoveryStore.clear({
         sessionId,
         ...(workbookBinding ? { workbookKey: workbookBinding } : {}),
       });
-      return cleared?.status === "cleared";
+      return ["cleared", "missing"].includes(cleared?.status);
     } catch {
       return false;
     }
@@ -751,19 +832,94 @@ export class SessionManager {
     };
   }
 
+  #nextMessageWorkbookBinding(session, options) {
+    const hasWorkbookBinding = options !== null &&
+      typeof options === "object" &&
+      Object.hasOwn(options, "workbookBinding");
+    if (!session.workbookBinding) {
+      return hasWorkbookBinding ? validateWorkbookBinding(options.workbookBinding) : null;
+    }
+    if (!hasWorkbookBinding || options.workbookBinding === undefined || options.workbookBinding === null) {
+      throw new AgentSessionError(
+        "WORKBOOK_BINDING_REQUIRED",
+        "当前工作簿缺少稳定恢复标识，无法继续该会话。",
+        400,
+      );
+    }
+    return validateWorkbookBinding(options.workbookBinding);
+  }
+
+  #findSessionOrFinalization(sessionId) {
+    return this.sessions.get(sessionId) ?? this.finalizingSessions.get(sessionId)?.session ?? null;
+  }
+
+  #trackFinalizingSession(session) {
+    const existing = this.finalizingSessions.get(session.id);
+    if (existing?.session === session) return existing;
+
+    const completion = createDeferred();
+    const entry = {
+      session,
+      cancelling: false,
+      completion: completion.promise,
+      resolve: completion.resolve,
+    };
+    this.finalizingSessions.set(session.id, entry);
+    return entry;
+  }
+
+  #finishFinalizingSession(session, { retain = false } = {}) {
+    const entry = this.finalizingSessions.get(session.id);
+    if (!entry || entry.session !== session) return;
+    if (!retain) this.finalizingSessions.delete(session.id);
+    entry.resolve();
+  }
+
+  async #waitForFinalizingSession(sessionId) {
+    const entry = this.finalizingSessions.get(sessionId);
+    if (!entry) return false;
+    await entry.completion;
+    return entry.cancelling;
+  }
+
+  async #waitForFinalizingWorkbook(workbookBinding) {
+    const entries = [...this.finalizingSessions.values()]
+      .filter((entry) => entry.session.workbookBinding === workbookBinding);
+    if (entries.length === 0) return false;
+    await Promise.all(entries.map((entry) => entry.completion));
+    return entries.some((entry) => entry.cancelling);
+  }
+
   #getSession(sessionId) {
     const session = this.sessions.get(sessionId);
     if (!session) {
       throw new AgentSessionError("SESSION_NOT_FOUND", "Agent 会话不存在或已过期。", 404);
+    }
+    if (session.cancelled || session.suspendedForRecovery) {
+      throw new AgentSessionError("AGENT_CANCELLED", "当前 Agent 会话已停止。", 409);
     }
     return session;
   }
 
   #removeSession(sessionId) {
     const session = this.sessions.get(sessionId);
-    if (session) session.cancelled = true;
-    session?.abortController?.abort();
+    this.#stopSession(session);
     this.sessions.delete(sessionId);
+  }
+
+  #stopSession(session) {
+    if (!session) return;
+    session.cancelled = true;
+    session.abortController?.abort();
+  }
+
+  async #waitForCheckpoint(session) {
+    try {
+      await session.checkpointTail;
+    } catch {
+      // Checkpoint failures are reflected through recovery state and must not
+      // prevent a later confirmed clear from serializing behind the attempt.
+    }
   }
 
   async #advance(session) {

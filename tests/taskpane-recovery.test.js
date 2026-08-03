@@ -22,8 +22,10 @@ test("任务窗格恢复后明确不重放中断工作，并允许用户确认�
   assert.match(taskpaneHtml, /id="clear-recovery-button"/);
   assert.match(taskpaneJs, /不会自动重发模型请求或 Excel 修改/);
   assert.match(taskpaneJs, /async function clearRecoverySession\(\)/);
-  assert.match(taskpaneJs, /await runner\.resetSession\(\);/);
   assert.match(taskpaneJs, /await api\.clearConversation\(\{ sessionId \}\);/);
+  assert.match(taskpaneJs, /await api\.clearConversation\(\{ sessionId \}\);[\s\S]*?runner\.discardSession\(sessionId\);/);
+  assert.match(taskpaneJs, /runner\.sessionId === sessionId\) startRecoveryHeartbeat\(\)/);
+  assert.match(taskpaneJs, /无法清除当前恢复会话/);
   assert.match(taskpaneJs, /title: "清空恢复会话？"/);
 });
 
@@ -51,4 +53,32 @@ test("工作簿标识准备完毕后才请求恢复，并把绑定交给会话�
   assert.doesNotMatch(taskpaneJs, /workbook-name:\$\{name\}/);
   assert.match(taskpaneJs, /recoveryDisabledForBinding = !workbookBinding && !previewMode;/);
   assert.match(taskpaneJs, /没有可验证的稳定标识，已关闭本地恢复/);
+});
+
+test("传输中断保留会话，发送和心跳前重新读取 Office 工作簿绑定", () => {
+  assert.match(
+    taskpaneJs,
+    /API_TRANSPORT_ERROR[\s\S]*?recoverableSession: true/,
+  );
+  assert.match(
+    taskpaneJs,
+    /API_STREAM_INTERRUPTED[\s\S]*?recoverableSession: true/,
+  );
+  assert.match(
+    taskpaneJs,
+    /API_STREAM_INCOMPLETE[\s\S]*?recoverableSession: true/,
+  );
+  assert.match(taskpaneJs, /async function touchConversationRecovery\(\) \{\s*await prepareWorkbookBinding\(\);/);
+  assert.match(taskpaneJs, /async function submitPrompt\(\)[\s\S]*?await prepareWorkbookBinding\(\);[\s\S]*?await runner\.run/);
+  assert.match(
+    taskpaneJs,
+    /runner\.sessionId && sessionWorkbookBinding !== workbookBinding[\s\S]*?await api\.clearConversation\(\{ sessionId: previousSessionId \}\);[\s\S]*?runner\.discardSession\(previousSessionId\)[\s\S]*?resetRecoveredPresentation\(\);/,
+  );
+  assert.match(taskpaneJs, /if \(!runner\.sessionId\) sessionWorkbookBinding = workbookBinding;/);
+  assert.match(taskpaneJs, /elements\.promptInput\.value = message;[\s\S]*?旧会话无法安全清除/);
+});
+
+test("原生随机管道令牌不再作为恢复绑定", () => {
+  assert.match(taskpaneJs, /async function readWorkbookBinding\(\) \{\s*if \(legacyMode\) return null;/);
+  assert.doesNotMatch(taskpaneJs, /return `legacy:\$\{legacySessionId\}`/);
 });

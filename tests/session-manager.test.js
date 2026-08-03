@@ -19,9 +19,24 @@ function finalResponse(text = "完成") {
   };
 }
 
+async function removeRecoveryTestDirectory(directory) {
+  let lastError;
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    try {
+      await rm(directory, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      lastError = error;
+      if (error?.code !== "ENOTEMPTY" || attempt === 7) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  }
+  throw lastError;
+}
+
 async function createRecoveryStore(t, options = {}) {
   const directory = await mkdtemp(join(tmpdir(), "chatexcel-session-recovery-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  t.after(() => removeRecoveryTestDirectory(directory));
   return new ConversationRecoveryStore({
     recoveryPath: join(directory, "conversation-recovery.json"),
     protect: async (plaintext) => Buffer.from(plaintext, "utf8").toString("base64"),
@@ -413,6 +428,42 @@ test("取消会中止正在进行的模型请求并清理会话", async (t) => {
   assert.equal(manager.sessions.size, 0);
 });
 
+test("普通取消在恢复快照暂不可清除时仍中止内存请求", async (t) => {
+  let aborted = false;
+  let requestStarted;
+  const requestStartedPromise = new Promise((resolve) => { requestStarted = resolve; });
+  const recoveryStore = {
+    async save() { return { status: "saved" }; },
+    async restore() { return { status: "missing" }; },
+    async touch() { return { status: "missing" }; },
+    async clear() { return { status: "unavailable" }; },
+  };
+  const manager = new SessionManager({
+    recoveryStore,
+    responsesClient: {
+      create({ signal }) {
+        requestStarted();
+        return new Promise((_resolve, reject) => {
+          signal.addEventListener("abort", () => {
+            aborted = true;
+            reject(new AgentSessionError("AGENT_CANCELLED", "cancelled", 499));
+          }, { once: true });
+        });
+      },
+    },
+  });
+  t.after(() => manager.dispose());
+
+  const startPromise = manager.start("普通停止", "session-ordinary-cancel-01", {
+    workbookBinding: "workbook://ordinary-cancel",
+  });
+  await requestStartedPromise;
+  assert.equal(await manager.cancel("session-ordinary-cancel-01"), true);
+  await assert.rejects(() => startPromise, (error) => error.code === "AGENT_CANCELLED");
+  assert.equal(aborted, true);
+  assert.equal(manager.sessions.has("session-ordinary-cancel-01"), false);
+});
+
 test("显式取消后迟到的模型响应不能重新写入恢复缓存", async (t) => {
   const recoveryStore = await createRecoveryStore(t);
   let resolveResponse;
@@ -442,6 +493,356 @@ test("显式取消后迟到的模型响应不能重新写入恢复缓存", async
 
   assert.equal(manager.sessions.size, 0);
   assert.equal((await recoveryStore.restore({ workbookKey: "workbook://cancel-race" })).status, "missing");
+});
+
+test("无法确认恢复快照已清除时保留内存会话以允许重试", async (t) => {
+  const recoveryStore = {
+    async save() { return { status: "saved" }; },
+    async restore() { return { status: "missing" }; },
+    async touch() { return { status: "missing" }; },
+    async clear() { return { status: "unavailable" }; },
+  };
+  const manager = new SessionManager({
+    recoveryStore,
+    responsesClient: { async create() { return finalResponse(); } },
+  });
+  t.after(() => manager.dispose());
+
+  await manager.start("保留清除重试", "session-clear-retry-01", {
+    workbookBinding: "workbook://clear-retry",
+  });
+  await assert.rejects(
+    () => manager.clearRecoverySession("session-clear-retry-01"),
+    (error) => error.code === "RECOVERY_CLEAR_UNAVAILABLE",
+  );
+
+  assert.equal(manager.sessions.has("session-clear-retry-01"), true);
+});
+
+test("没有恢复绑定的普通会话取消不依赖恢复存储", async (t) => {
+  let clearCalls = 0;
+  const recoveryStore = {
+    async save() { return { status: "saved" }; },
+    async restore() { return { status: "missing" }; },
+    async touch() { return { status: "missing" }; },
+    async clear() {
+      clearCalls += 1;
+      return { status: "unavailable" };
+    },
+  };
+  const manager = new SessionManager({
+    recoveryStore,
+    responsesClient: { async create() { return finalResponse(); } },
+  });
+  t.after(() => manager.dispose());
+
+  await manager.start("普通会话取消", "session-plain-cancel-01");
+  assert.equal(await manager.cancel("session-plain-cancel-01"), true);
+  assert.equal(clearCalls, 0);
+  assert.equal(manager.sessions.has("session-plain-cancel-01"), false);
+});
+
+test("其他会话的恢复快照不能确认清除成功", async (t) => {
+  const recoveryStore = {
+    async save() { return { status: "saved" }; },
+    async restore() { return { status: "missing" }; },
+    async touch() { return { status: "missing" }; },
+    async clear() { return { status: "mismatch" }; },
+  };
+  const manager = new SessionManager({
+    recoveryStore,
+    responsesClient: { async create() { return finalResponse(); } },
+  });
+  t.after(() => manager.dispose());
+
+  await manager.start("保留会话归属", "session-clear-mismatch-01", {
+    workbookBinding: "workbook://clear-mismatch",
+  });
+  await assert.rejects(
+    () => manager.clearRecoverySession("session-clear-mismatch-01"),
+    (error) => error.code === "RECOVERY_CLEAR_UNAVAILABLE",
+  );
+  assert.equal(manager.sessions.has("session-clear-mismatch-01"), true);
+});
+
+test("显式恢复清除在内存会话不存在时仍按会话 ID 删除快照", async (t) => {
+  const clearCalls = [];
+  const recoveryStore = {
+    async save() { return { status: "saved" }; },
+    async restore() { return { status: "missing" }; },
+    async touch() { return { status: "missing" }; },
+    async clear(request) {
+      clearCalls.push(request);
+      return { status: "cleared" };
+    },
+  };
+  const manager = new SessionManager({
+    recoveryStore,
+    responsesClient: { async create() { return finalResponse(); } },
+  });
+  t.after(() => manager.dispose());
+
+  assert.equal(await manager.clearRecoverySession("session-persisted-only-01"), true);
+  assert.deepEqual(clearCalls, [{ sessionId: "session-persisted-only-01" }]);
+});
+
+test("严格恢复清除等待已入队 checkpoint，避免快照在清除后复活", async (t) => {
+  let releaseSecondSave;
+  let secondSaveStarted;
+  const secondSaveReady = new Promise((resolve) => { secondSaveStarted = resolve; });
+  const secondSaveReleased = new Promise((resolve) => { releaseSecondSave = resolve; });
+  let saveCount = 0;
+  let clearCount = 0;
+  let persistedSnapshot = null;
+  const recoveryStore = {
+    async save({ snapshot }) {
+      saveCount += 1;
+      if (saveCount === 2) {
+        secondSaveStarted();
+        await secondSaveReleased;
+      }
+      persistedSnapshot = snapshot;
+      return { status: "saved" };
+    },
+    async restore() { return { status: "missing" }; },
+    async touch() { return { status: "missing" }; },
+    async clear() {
+      clearCount += 1;
+      persistedSnapshot = null;
+      return { status: "cleared" };
+    },
+  };
+  const manager = new SessionManager({
+    recoveryStore,
+    responsesClient: { async create() { return finalResponse("迟到响应"); } },
+  });
+  t.after(() => manager.dispose());
+
+  const startPromise = manager.start("严格清除", "session-clear-race-01", {
+    workbookBinding: "workbook://clear-race",
+  });
+  await secondSaveReady;
+  const clearPromise = manager.clearRecoverySession("session-clear-race-01");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(clearCount, 0);
+
+  releaseSecondSave();
+  assert.equal(await clearPromise, true);
+  await assert.rejects(() => startPromise, (error) => error.code === "AGENT_CANCELLED");
+  assert.equal(clearCount, 1);
+  assert.equal(persistedSnapshot, null);
+  assert.equal(manager.sessions.has("session-clear-race-01"), false);
+});
+
+for (const [label, clearSession] of [
+  ["普通取消", (manager, sessionId) => manager.cancel(sessionId)],
+  ["严格恢复清除", (manager, sessionId) => manager.clearRecoverySession(sessionId)],
+]) {
+  test(`挂起与${label}并发时最终 checkpoint 不会复活快照`, async (t) => {
+    let releaseFinalSave;
+    let finalSaveStarted;
+    const finalSaveReady = new Promise((resolve) => { finalSaveStarted = resolve; });
+    const finalSaveReleased = new Promise((resolve) => { releaseFinalSave = resolve; });
+    let saveCount = 0;
+    let clearCount = 0;
+    let persistedSnapshot = null;
+    let requestStarted;
+    const requestStartedPromise = new Promise((resolve) => { requestStarted = resolve; });
+    const recoveryStore = {
+      async save({ snapshot }) {
+        saveCount += 1;
+        if (saveCount === 2) {
+          finalSaveStarted();
+          await finalSaveReleased;
+        }
+        persistedSnapshot = snapshot;
+        return { status: "saved" };
+      },
+      async restore() { return { status: "missing" }; },
+      async touch() { return { status: "missing" }; },
+      async clear() {
+        clearCount += 1;
+        persistedSnapshot = null;
+        return { status: "cleared" };
+      },
+    };
+    const manager = new SessionManager({
+      recoveryStore,
+      responsesClient: {
+        create({ signal }) {
+          requestStarted();
+          return new Promise((_resolve, reject) => {
+            signal.addEventListener(
+              "abort",
+              () => reject(new AgentSessionError("AGENT_CANCELLED", "cancelled", 499)),
+              { once: true },
+            );
+          });
+        },
+      },
+    });
+    t.after(() => manager.dispose());
+
+    const sessionId = `session-suspend-clear-${label === "普通取消" ? "cancel" : "strict"}`;
+    const startPromise = manager.start("并发清除", sessionId, {
+      workbookBinding: `workbook://${sessionId}`,
+    });
+    void startPromise.catch(() => {});
+    await requestStartedPromise;
+    const suspendPromise = manager.suspend(sessionId);
+    await finalSaveReady;
+
+    await assert.rejects(
+      () => manager.start("不得复用", sessionId, { workbookBinding: `workbook://${sessionId}` }),
+      (error) => error.code === "SESSION_EXISTS",
+    );
+    const clearPromise = clearSession(manager, sessionId);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(clearCount, 0);
+
+    releaseFinalSave();
+    assert.equal(await clearPromise, true);
+    assert.equal(await suspendPromise, true);
+    await assert.rejects(() => startPromise, (error) => error.code === "AGENT_CANCELLED");
+    assert.equal(clearCount, 1);
+    assert.equal(persistedSnapshot, null);
+    assert.equal(manager.sessions.has(sessionId), false);
+    assert.equal(manager.finalizingSessions.has(sessionId), false);
+  });
+}
+
+for (const [label, observe] of [
+  ["恢复", (manager, sessionId, workbookBinding) => manager.restore(workbookBinding)],
+  ["心跳", (manager, sessionId, workbookBinding) => manager.touchRecovery(sessionId, workbookBinding)],
+]) {
+  test(`${label}会等待挂起会话的最终 checkpoint`, async (t) => {
+    let releaseFinalSave;
+    let finalSaveStarted;
+    const finalSaveReady = new Promise((resolve) => { finalSaveStarted = resolve; });
+    const finalSaveReleased = new Promise((resolve) => { releaseFinalSave = resolve; });
+    let protectCalls = 0;
+    const recoveryStore = await createRecoveryStore(t, {
+      protect: async (plaintext) => {
+        protectCalls += 1;
+        if (protectCalls === 2) {
+          finalSaveStarted();
+          await finalSaveReleased;
+        }
+        return Buffer.from(plaintext, "utf8").toString("base64");
+      },
+    });
+    let requestStarted;
+    const requestStartedPromise = new Promise((resolve) => { requestStarted = resolve; });
+    const manager = new SessionManager({
+      recoveryStore,
+      responsesClient: {
+        create({ signal }) {
+          requestStarted();
+          return new Promise((_resolve, reject) => {
+            signal.addEventListener(
+              "abort",
+              () => reject(new AgentSessionError("AGENT_CANCELLED", "cancelled", 499)),
+              { once: true },
+            );
+          });
+        },
+      },
+    });
+    t.after(() => manager.dispose());
+
+    const sessionId = `session-finalization-${label === "恢复" ? "restore" : "touch"}`;
+    const workbookBinding = `workbook://${sessionId}`;
+    const startPromise = manager.start("等待收尾", sessionId, { workbookBinding });
+    void startPromise.catch(() => {});
+    await requestStartedPromise;
+    const suspendPromise = manager.suspend(sessionId);
+    await finalSaveReady;
+
+    let observed = false;
+    const observedPromise = observe(manager, sessionId, workbookBinding).then((value) => {
+      observed = true;
+      return value;
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(observed, false);
+
+    releaseFinalSave();
+    assert.equal(await suspendPromise, true);
+    await assert.rejects(() => startPromise, (error) => error.code === "AGENT_CANCELLED");
+    const result = await observedPromise;
+    if (label === "恢复") {
+      assert.equal(result.sessionId, sessionId);
+    } else {
+      assert.deepEqual(result, { status: "touched" });
+    }
+  });
+}
+
+test("后续消息迁移工作簿绑定并以新绑定覆盖恢复快照", async (t) => {
+  const recoveryStore = await createRecoveryStore(t);
+  const inputs = [];
+  const manager = new SessionManager({
+    recoveryStore,
+    responsesClient: {
+      async create({ input }) {
+        inputs.push(structuredClone(input));
+        return finalResponse("已继续");
+      },
+    },
+  });
+  t.after(() => manager.dispose());
+
+  await manager.start("先分析原工作簿", "session-binding-migrate-01", {
+    workbookBinding: "document-url:C:/reports/original.xlsx",
+  });
+  await manager.addMessage("session-binding-migrate-01", "另存为后继续", {
+    workbookBinding: "document-url:C:/reports/copy.xlsx",
+  });
+
+  assert.equal(manager.sessions.get("session-binding-migrate-01").workbookBinding, "document-url:C:/reports/copy.xlsx");
+  assert.equal(
+    (await recoveryStore.restore({ workbookKey: "document-url:C:/reports/original.xlsx" })).status,
+    "mismatch",
+  );
+  const restored = await recoveryStore.restore({ workbookKey: "document-url:C:/reports/copy.xlsx" });
+  assert.equal(restored.status, "available");
+  assert.equal(restored.snapshot.workbook.binding, "document-url:C:/reports/copy.xlsx");
+  assert.equal(
+    restored.snapshot.session.input.filter((item) => item.role === "user").at(-1).content[0].text,
+    "另存为后继续",
+  );
+  assert.equal(inputs.length, 2);
+});
+
+test("已绑定恢复会话缺少后续绑定时不修改上下文或调用模型", async (t) => {
+  const recoveryStore = await createRecoveryStore(t);
+  let providerCalls = 0;
+  const manager = new SessionManager({
+    recoveryStore,
+    responsesClient: {
+      async create() {
+        providerCalls += 1;
+        return finalResponse("已完成");
+      },
+    },
+  });
+  t.after(() => manager.dispose());
+
+  await manager.start("建立恢复会话", "session-binding-required-01", {
+    workbookBinding: "document-url:C:/reports/bound.xlsx",
+  });
+  const inputBefore = structuredClone(manager.sessions.get("session-binding-required-01").input);
+  await assert.rejects(
+    () => manager.addMessage("session-binding-required-01", "不应追加", {}),
+    (error) => error.code === "WORKBOOK_BINDING_REQUIRED",
+  );
+
+  assert.deepEqual(manager.sessions.get("session-binding-required-01").input, inputBefore);
+  assert.equal(providerCalls, 1);
+  assert.equal(
+    (await recoveryStore.restore({ workbookKey: "document-url:C:/reports/bound.xlsx" })).status,
+    "available",
+  );
 });
 
 test("清理超过空闲期限的内存会话", async (t) => {
@@ -651,7 +1052,9 @@ test("服务重启后恢复当前会话且恢复本身不调用模型", async (t
   ]);
   assert.equal(providerCalls, 0);
 
-  await restoredManager.addMessage(recovered.sessionId, "请继续", {});
+  await restoredManager.addMessage(recovered.sessionId, "请继续", {
+    workbookBinding: "workbook://sales-report",
+  });
   assert.equal(providerCalls, 1);
   assert.equal(continuedInput[0].content[0].text, "分析 Sheet1!A1");
   assert.equal(continuedInput.at(-1).content[0].text, "请继续");
@@ -774,7 +1177,9 @@ test("最终提供方失败后保留会话，下一条显式消息才能继续",
   assert.equal(manager.sessions.has("session-provider-recovery"), true);
   assert.equal((await recoveryStore.restore({ workbookKey: "workbook://inventory" })).status, "available");
 
-  await manager.addMessage("session-provider-recovery", "请继续", {});
+  await manager.addMessage("session-provider-recovery", "请继续", {
+    workbookBinding: "workbook://inventory",
+  });
   assert.equal(attempts, 2);
   assert.equal(inputs[1].at(-1).content[0].text, "请继续");
 });
@@ -822,7 +1227,9 @@ test("恢复等待工具的会话时只写入中断结果，不自动调用模�
 
   assert.equal(recovered.recovery.notice, "tool_execution_interrupted");
   assert.equal(providerCalls, 0);
-  await restoredManager.addMessage(recovered.sessionId, "请重新检查后继续", {});
+  await restoredManager.addMessage(recovered.sessionId, "请重新检查后继续", {
+    workbookBinding: "workbook://pending-tool",
+  });
   assert.equal(providerCalls, 1);
   const interruptedOutput = continuedInput.find((item) => item.type === "function_call_output");
   assert.equal(JSON.parse(interruptedOutput.output).error.code, "TOOL_EXECUTION_INTERRUPTED");

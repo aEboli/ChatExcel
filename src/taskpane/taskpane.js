@@ -52,10 +52,20 @@ const elements = {
   promptInput: document.querySelector("#prompt-input"),
   modelButton: document.querySelector("#model-button"),
   modelLabel: document.querySelector("#model-label"),
+  modelEffortLabel: document.querySelector("#model-effort-label"),
+  modelSettingsMenu: document.querySelector("#model-settings-menu"),
+  modelSettingsPanel: document.querySelector("#model-settings-panel"),
+  modelSettingsModelRow: document.querySelector("#model-settings-model-row"),
+  modelMenuValue: document.querySelector("#model-menu-value"),
+  modelSubmenu: document.querySelector("#model-submenu"),
+  modelMenuBack: document.querySelector("#model-menu-back"),
   modelMenu: document.querySelector("#model-menu"),
   effortButton: document.querySelector("#effort-button"),
   effortLabel: document.querySelector("#effort-label"),
+  effortSubmenu: document.querySelector("#effort-submenu"),
+  effortMenuBack: document.querySelector("#effort-menu-back"),
   effortMenu: document.querySelector("#effort-menu"),
+  resetModelSettings: document.querySelector("#reset-model-settings"),
   contextButton: document.querySelector("#context-button"),
   contextLabel: document.querySelector("#context-label"),
   easterFooter: document.querySelector("#easter-footer"),
@@ -110,6 +120,7 @@ let selectedReasoningEffort = null;
 let currentContext = null;
 let workbookIdentity = "当前工作簿";
 let workbookBinding = null;
+let sessionWorkbookBinding = null;
 let configStatusTitle = "配置尚未读取";
 let settingsDiscoveredModels = [];
 let pendingConfirmation = null;
@@ -169,15 +180,26 @@ async function requestJson(path, { method = "GET", body, signal } = {}) {
 }
 
 async function requestStream(path, { method = "POST", body, signal, onEvent } = {}) {
-  const response = await fetch(path, {
-    method,
-    headers: {
-      Accept: "text/event-stream",
-      ...(body === undefined ? {} : { "Content-Type": "application/json" }),
-    },
-    body: body === undefined ? undefined : JSON.stringify(body),
-    signal,
-  });
+  let response;
+  try {
+    response = await fetch(path, {
+      method,
+      headers: {
+        Accept: "text/event-stream",
+        ...(body === undefined ? {} : { "Content-Type": "application/json" }),
+      },
+      body: body === undefined ? undefined : JSON.stringify(body),
+      signal,
+    });
+  } catch (error) {
+    if (signal?.aborted || error?.name === "AbortError") throw error;
+    throw new ApiError(
+      "API_TRANSPORT_ERROR",
+      "无法连接本地服务，当前会话可在服务恢复后继续。",
+      0,
+      { recoverableSession: true },
+    );
+  }
   const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
   if (!contentType.includes("text/event-stream")) {
     let payload;
@@ -262,12 +284,25 @@ async function requestStream(path, { method = "POST", body, signal, onEvent } = 
       if (normalized.startsWith("data:")) dataLines.push(normalized.slice(5).replace(/^ /, ""));
     }
     handleFrame();
+  } catch (error) {
+    if (signal?.aborted || error?.name === "AbortError" || error instanceof ApiError) throw error;
+    throw new ApiError(
+      "API_STREAM_INTERRUPTED",
+      "本地服务事件流已中断，当前会话可在服务恢复后继续。",
+      response.status,
+      { recoverableSession: true },
+    );
   } finally {
     reader.releaseLock?.();
   }
 
   if (result === null) {
-    throw new ApiError("API_STREAM_INCOMPLETE", "本地服务事件流未返回最终结果。", response.status);
+    throw new ApiError(
+      "API_STREAM_INCOMPLETE",
+      "本地服务事件流未返回最终结果，当前会话可在服务恢复后继续。",
+      response.status,
+      { recoverableSession: true },
+    );
   }
   return result;
 }
@@ -396,7 +431,7 @@ async function refreshWorkbookIdentity() {
 }
 
 async function readWorkbookBinding() {
-  if (legacyMode) return `legacy:${legacySessionId}`;
+  if (legacyMode) return null;
   if (previewMode || !globalThis.Excel) return null;
 
   return workbookBindingFromDocumentUrl(globalThis.Office?.context?.document?.url);
@@ -462,6 +497,7 @@ function stopRecoveryHeartbeat() {
 }
 
 async function touchConversationRecovery() {
+  await prepareWorkbookBinding();
   const sessionId = runner.sessionId;
   const binding = workbookBinding;
   if (!sessionId || !binding || previewMode) return;
@@ -524,6 +560,7 @@ async function restoreConversationRecovery() {
         return;
       }
       runner.restoreSession(recovery.sessionId);
+      sessionWorkbookBinding = workbookBinding;
       resetRecoveredPresentation();
       history.restorePresentation(recoveryPresentationMessages(recovery));
       renderHistoricalState();
@@ -1043,28 +1080,91 @@ async function pollLegacyState() {
   }
 }
 
-function closeMenus(except = null) {
-  const pairs = [
-    [elements.modelMenu, elements.modelButton],
-    [elements.effortMenu, elements.effortButton],
-    [elements.modeMenu, elements.modeButton],
-  ];
-  for (const [menu, button] of pairs) {
-    if (menu === except) continue;
-    menu.hidden = true;
-    button.setAttribute("aria-expanded", "false");
-  }
+function closeMenus() {
+  elements.modelSettingsMenu.hidden = true;
+  elements.modelSettingsPanel.hidden = false;
+  elements.modelSubmenu.hidden = true;
+  elements.effortSubmenu.hidden = true;
+  elements.modelMenu.hidden = true;
+  elements.effortMenu.hidden = true;
+  elements.modelButton.setAttribute("aria-expanded", "false");
+  elements.modelSettingsModelRow.setAttribute("aria-expanded", "false");
+  elements.effortButton.setAttribute("aria-expanded", "false");
+  elements.modeMenu.hidden = true;
+  elements.modeButton.setAttribute("aria-expanded", "false");
+}
+
+function openModelSettingsMenu() {
+  closeMenus();
+  elements.modelSettingsMenu.hidden = false;
+  elements.modelSettingsPanel.hidden = false;
+  elements.modelButton.setAttribute("aria-expanded", "true");
+}
+
+function openModelSettingsSubmenu(kind) {
+  closeMenus();
+  elements.modelSettingsMenu.hidden = false;
+  elements.modelSettingsPanel.hidden = true;
+  const isModel = kind === "model";
+  const submenu = isModel ? elements.modelSubmenu : elements.effortSubmenu;
+  const menu = isModel ? elements.modelMenu : elements.effortMenu;
+  const row = isModel ? elements.modelSettingsModelRow : elements.effortButton;
+  submenu.hidden = false;
+  menu.hidden = false;
+  row.setAttribute("aria-expanded", "true");
+  elements.modelButton.setAttribute("aria-expanded", "true");
+}
+
+function toggleModelSettingsMenu() {
+  if (elements.modelSettingsMenu.hidden) openModelSettingsMenu();
+  else closeMenus();
 }
 
 function toggleMenu(menu, button) {
-  const opening = menu.hidden;
-  closeMenus(opening ? menu : null);
-  menu.hidden = !opening;
-  button.setAttribute("aria-expanded", String(opening));
+  if (menu === elements.modeMenu) {
+    const opening = menu.hidden;
+    closeMenus();
+    menu.hidden = !opening;
+    button.setAttribute("aria-expanded", String(opening));
+  }
 }
 
 function modelEntry(modelId) {
   return configState?.models?.find((model) => model.id === modelId) ?? null;
+}
+
+function modelDisplayName(modelId) {
+  const value = String(modelId ?? "").trim();
+  if (!value) return "--";
+  const match = value.match(/^gpt-(\d+(?:\.\d+)?)-(sol|terra)$/i);
+  if (match) return `${match[1]} ${match[2][0].toUpperCase()}${match[2].slice(1).toLowerCase()}`;
+  return value;
+}
+
+function reasoningEffortDisplayName(effort) {
+  const value = String(effort ?? "").trim().toLowerCase();
+  if (!value) return "自动";
+  if (value === "none" || value === "off" || value === "disabled") return "关闭";
+  if (value === "low" || value === "minimal" || value === "min") return "低";
+  if (value === "medium" || value === "med" || value === "balanced") return "中";
+  if (value === "high") return "高";
+  if (value === "xhigh" || value === "max" || value === "ultra") return "极高";
+  return String(effort);
+}
+
+function defaultReasoningEffortForModel(modelId) {
+  const entry = modelEntry(modelId);
+  if (!entry) return null;
+  if (entry.defaultReasoningEffort && entry.reasoningEfforts.includes(entry.defaultReasoningEffort)) {
+    return entry.defaultReasoningEffort;
+  }
+  const configuredEffort = configState?.config?.reasoningEffort;
+  if (modelId === configState?.config?.model && configuredEffort) {
+    return entry.reasoningEfforts.includes(configuredEffort)
+      ? configuredEffort
+      : null;
+  }
+  return entry.reasoningEfforts[0] ?? null;
 }
 
 function availableReasoningEfforts() {
@@ -1082,9 +1182,11 @@ function renderModelMenu() {
     option.append(createIcon("/assets/fluent/model.svg"));
     const copy = document.createElement("span");
     const name = document.createElement("strong");
-    name.textContent = model.id;
+    name.textContent = modelDisplayName(model.id);
     const detail = document.createElement("small");
-    detail.textContent = `${model.reasoningEfforts.length} 个思考等级`;
+    detail.textContent = model.id === modelDisplayName(model.id)
+      ? `${model.reasoningEfforts.length} 个推理强度`
+      : `${model.id} · ${model.reasoningEfforts.length} 个推理强度`;
     copy.append(name, detail);
     option.append(copy);
     option.addEventListener("click", () => {
@@ -1106,11 +1208,13 @@ function renderEffortMenu() {
     const option = document.createElement("button");
     option.type = "button";
     option.className = `menu-option${effort === selectedReasoningEffort ? " is-selected" : ""}`;
+    option.dataset.effortLevel = reasoningEffortLevel(effort);
     option.setAttribute("role", "option");
     option.setAttribute("aria-selected", String(effort === selectedReasoningEffort));
     option.append(createIcon("/assets/fluent/brain.svg"));
     const label = document.createElement("strong");
-    label.textContent = effort;
+    label.textContent = reasoningEffortDisplayName(effort);
+    option.setAttribute("aria-label", `推理强度：${label.textContent}`);
     const copy = document.createElement("span");
     copy.append(label);
     option.append(copy);
@@ -1123,14 +1227,41 @@ function renderEffortMenu() {
   }
 }
 
-function updateContextControl() {
-  if (currentContext?.status === "available") {
-    elements.contextLabel.textContent = `${currentContext.percent}%`;
-    elements.contextButton.title = `上下文 ${currentContext.usedTokens.toLocaleString()} / ${currentContext.limitTokens.toLocaleString()} tokens`;
-  } else {
-    elements.contextLabel.textContent = "--";
-    elements.contextButton.title = "提供方尚未返回上下文用量";
+function reasoningEffortLevel(effort) {
+  const value = String(effort ?? "").trim().toLowerCase();
+  if (!value || /^(none|off|disabled|default|auto)$/.test(value)) return "0";
+  if (/(xhigh|ultra|max|very[-_ ]?high)/.test(value)) return "4";
+  if (/(high|large)/.test(value)) return "3";
+  if (/(medium|med|balanced)/.test(value)) return "2";
+  if (/(low|min|minimal|small)/.test(value)) return "1";
+  return "2";
+}
+
+function compactTokenCount(value) {
+  const tokens = Number(value);
+  if (!Number.isFinite(tokens) || tokens <= 0) return "--";
+  if (tokens >= 1_000_000) {
+    const millions = tokens / 1_000_000;
+    return `${Number.isInteger(millions) ? millions : millions.toFixed(1)}M`;
   }
+  if (tokens >= 1_000) return `${Math.round(tokens / 1_000)}K`;
+  return String(Math.round(tokens));
+}
+
+function updateContextControl() {
+  const limitTokens = Number(currentContext?.limitTokens ?? configState?.config?.contextWindow ?? configState?.settings?.contextWindow);
+  const compactLimit = compactTokenCount(limitTokens);
+  const hasUsage = currentContext?.status === "available" && Number.isFinite(Number(currentContext.percent));
+  const percent = hasUsage ? Math.max(0, Math.min(100, Number(currentContext.percent))) : 0;
+  const usedTokens = Number(currentContext?.usedTokens);
+  const displayedLimit = compactLimit === "--" ? "上下文长度尚未读取" : `上下文长度 ${compactLimit}`;
+  elements.contextLabel.textContent = compactLimit;
+  elements.contextButton.dataset.contextState = hasUsage ? "available" : "unavailable";
+  elements.contextButton.style.setProperty("--context-progress", `${percent * 3.6}deg`);
+  elements.contextButton.title = hasUsage && Number.isFinite(usedTokens) && Number.isFinite(limitTokens)
+    ? `${displayedLimit} · 已使用 ${usedTokens.toLocaleString()} / ${limitTokens.toLocaleString()} tokens（${Math.round(percent)}%）`
+    : `${displayedLimit} · 提供方尚未返回上下文用量`;
+  elements.contextButton.setAttribute("aria-label", elements.contextButton.title);
 }
 
 function providerConnectivityDescription() {
@@ -1151,7 +1282,9 @@ function updateProviderConnectivityVisuals() {
       ? "error"
       : "checking";
   const description = providerConnectivityDescription();
-  const modelTitle = selectedModel ? `模型：${selectedModel}` : "选择模型";
+  const modelTitle = selectedModel
+    ? `模型：${modelDisplayName(selectedModel)}，推理强度：${reasoningEffortDisplayName(selectedReasoningEffort)}`
+    : "选择模型";
   for (const button of [elements.modelButton, elements.settingsButton]) {
     button.dataset.providerConnectivity = state;
     button.setAttribute("aria-busy", String(state === "checking"));
@@ -1169,15 +1302,34 @@ function setProviderConnectivityState(state, code = "") {
 }
 
 function updateComposerControls() {
-  elements.modelLabel.textContent = selectedModel || "模型";
-  elements.effortLabel.textContent = selectedReasoningEffort || "思考";
+  const modelName = modelDisplayName(selectedModel);
+  const effortName = reasoningEffortDisplayName(selectedReasoningEffort);
+  elements.modelLabel.textContent = modelName;
+  elements.modelEffortLabel.textContent = effortName;
+  elements.modelMenuValue.textContent = modelName;
+  elements.effortLabel.textContent = effortName;
+  elements.modelButton.dataset.effortLevel = reasoningEffortLevel(selectedReasoningEffort);
+  elements.effortButton.dataset.effortLevel = reasoningEffortLevel(selectedReasoningEffort);
+  elements.effortButton.disabled = uiBusy || availableReasoningEfforts().length === 0;
   elements.effortButton.title = selectedReasoningEffort
-    ? `思考等级：${selectedReasoningEffort}`
-    : "选择思考等级";
+    ? `推理强度：${effortName}（${selectedReasoningEffort}）`
+    : "推理强度：自动（提供方默认）";
+  elements.effortButton.setAttribute("aria-label", elements.effortButton.title);
   renderModelMenu();
   renderEffortMenu();
   updateContextControl();
   updateProviderConnectivityVisuals();
+}
+
+function resetModelSettings() {
+  const defaultModel = configState?.config?.model
+    ?? configState?.settings?.model
+    ?? configState?.models?.[0]?.id
+    ?? null;
+  selectedModel = defaultModel;
+  selectedReasoningEffort = defaultReasoningEffortForModel(defaultModel);
+  updateComposerControls();
+  closeMenus();
 }
 
 function normalizeConfigState(payload) {
@@ -1274,6 +1426,8 @@ function setApprovalMode(mode) {
   elements.modeIcon.src = isAuto ? "/assets/fluent/auto.svg" : "/assets/fluent/approval.svg";
   elements.modeLabel.textContent = isAuto ? "免审批" : "需审批";
   elements.modeButton.title = isAuto ? "无需审批：告知后直接执行" : "需要审批：每次修改由你决定";
+  elements.modeButton.setAttribute("aria-label", elements.modeButton.title);
+  elements.modeButton.dataset.mode = approvalMode;
   for (const option of elements.modeMenu.querySelectorAll("[data-mode]")) {
     option.classList.toggle("is-selected", option.dataset.mode === approvalMode);
   }
@@ -1321,6 +1475,7 @@ function resizePromptInput() {
 
 function setBusy(busy) {
   uiBusy = busy;
+  if (busy) closeMenus();
   elements.promptInput.disabled = busy;
   elements.modelButton.disabled = busy || !configState;
   elements.effortButton.disabled = busy || availableReasoningEfforts().length === 0;
@@ -1573,21 +1728,25 @@ async function clearRecoverySession() {
   if (!confirmed) return;
 
   clearingRecoverySession = true;
-  if (runner.running) suppressNextStoppedNotice = true;
   stopRecoveryHeartbeat();
   try {
-    stopRecoveryHeartbeat();
-    await runner.resetSession();
+    await api.clearConversation({ sessionId });
+    if (runner.running) suppressNextStoppedNotice = true;
+    runner.discardSession(sessionId);
+    sessionWorkbookBinding = null;
     recoveryUnavailable = false;
     setRecoveryNotice("");
-    try {
-      await api.clearConversation({ sessionId });
-    } catch {
-      // cancel already requests the same cleanup; a missing recovery record is harmless.
-    }
     resetRecoveredPresentation();
     renderHistoricalState();
     setRecoveryNotice("当前恢复会话已清除。", { kind: "info" });
+  } catch (error) {
+    if (runner.sessionId === sessionId) startRecoveryHeartbeat();
+    setRecoveryNotice(
+      error instanceof Error
+        ? `无法清除当前恢复会话：${error.message}`
+        : "无法清除当前恢复会话，请稍后重试。",
+      { clearable: true, kind: "warning" },
+    );
   } finally {
     clearingRecoverySession = false;
   }
@@ -1602,13 +1761,36 @@ async function submitPrompt() {
   resizePromptInput();
   updateSendState();
   try {
+    await prepareWorkbookBinding();
+    if (runner.sessionId && sessionWorkbookBinding !== workbookBinding) {
+      const previousSessionId = runner.sessionId;
+      await api.clearConversation({ sessionId: previousSessionId });
+      runner.discardSession(previousSessionId);
+      sessionWorkbookBinding = null;
+      recoveryUnavailable = false;
+      stopRecoveryHeartbeat();
+      resetRecoveredPresentation();
+      renderHistoricalState();
+    }
+    if (!runner.sessionId) sessionWorkbookBinding = workbookBinding;
     await runner.run(message, {
       model: selectedModel,
       reasoningEffort: selectedReasoningEffort,
       workbookBinding: workbookBinding ?? undefined,
     });
-  } catch {
-    // Runner events already render a safe error.
+  } catch (error) {
+    if (!runner.running) {
+      elements.promptInput.value = message;
+      resizePromptInput();
+      updateSendState();
+      if (runner.sessionId) startRecoveryHeartbeat();
+      setRecoveryNotice(
+        error instanceof Error
+          ? `工作簿标识已变化，但旧会话无法安全清除：${error.message}`
+          : "工作簿标识已变化，但旧会话无法安全清除，请稍后重试。",
+        { clearable: true, kind: "warning" },
+      );
+    }
   }
 }
 
@@ -2024,8 +2206,12 @@ elements.easterTrigger.addEventListener("click", () => {
   elements.easterTrigger.setAttribute("aria-pressed", String(active));
   elements.easterTrigger.title = active ? "收起 ChatEx 彩蛋" : "打开 ChatEx 彩蛋";
 });
-elements.modelButton.addEventListener("click", () => toggleMenu(elements.modelMenu, elements.modelButton));
-elements.effortButton.addEventListener("click", () => toggleMenu(elements.effortMenu, elements.effortButton));
+elements.modelButton.addEventListener("click", toggleModelSettingsMenu);
+elements.modelSettingsModelRow.addEventListener("click", () => openModelSettingsSubmenu("model"));
+elements.effortButton.addEventListener("click", () => openModelSettingsSubmenu("effort"));
+elements.modelMenuBack.addEventListener("click", openModelSettingsMenu);
+elements.effortMenuBack.addEventListener("click", openModelSettingsMenu);
+elements.resetModelSettings.addEventListener("click", resetModelSettings);
 elements.modeButton.addEventListener("click", () => toggleMenu(elements.modeMenu, elements.modeButton));
 elements.modeMenu.addEventListener("click", (event) => {
   const option = event.target.closest("[data-mode]");

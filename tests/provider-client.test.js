@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createProviderClient } from "../src/server/provider-client.js";
+import { AGENT_INSTRUCTIONS, createProviderClient } from "../src/server/provider-client.js";
 
 const image = "data:image/png;base64,WA==";
 const input = [
@@ -49,6 +49,16 @@ const recoverableInput = [
   },
 ];
 
+test("Agent 指令要求公式优先和写后核验，但保留用户选择的审批模式", () => {
+  assert.match(AGENT_INSTRUCTIONS, /优先写入 Excel 公式而非静态值/);
+  assert.match(AGENT_INSTRUCTIONS, /先读取必要的工作簿上下文/);
+  assert.match(AGENT_INSTRUCTIONS, /检查工具结果中的 impact 和 verification/);
+  assert.match(
+    AGENT_INSTRUCTIONS,
+    /任务窗格会按照用户当前选择的审批模式处理修改工具；不得规避、合并隐藏或诱导改变该模式。/,
+  );
+});
+
 function config(protocol, endpoint) {
   return {
     protocol,
@@ -64,6 +74,10 @@ function transportError(code = "ECONNRESET") {
   const error = new TypeError("fetch failed");
   error.cause = { code };
   return error;
+}
+
+function sseFrame(event, payload) {
+  return `event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`;
 }
 
 async function run(protocol, endpoint, payload, check, requestInput = input) {
@@ -159,6 +173,8 @@ test("DeepSeek V4 Responses 将 none 显式发送为 reasoning.effort", async ()
 
 test("Anthropic Messages 使用 base64 图片和 tool_result", async () => {
   await run("anthropic-messages", "https://api.example/v1/messages", {
+    type: "message",
+    role: "assistant",
     content: [
       { type: "text", text: "完成" },
       { type: "tool_use", id: "call_2", name: "read_range", input: {} },
@@ -176,7 +192,10 @@ test("Anthropic Messages 使用 base64 图片和 tool_result", async () => {
 
 test("Gemini generateContent 使用 inlineData 和 functionResponse", async () => {
   await run("google-gemini", "https://api.example/v1beta/models/gemini-2.5-flash:generateContent", {
-    candidates: [{ content: { parts: [{ functionCall: { id: "call_2", name: "read_range", args: {} } }] } }],
+    candidates: [{
+      content: { parts: [{ functionCall: { id: "call_2", name: "read_range", args: {} } }] },
+      finishReason: "STOP",
+    }],
     usageMetadata: { promptTokenCount: 8, candidatesTokenCount: 4, totalTokenCount: 12 },
   }, (request, response) => {
     assert.equal(request.headers["x-goog-api-key"], "provider-secret");
@@ -209,7 +228,7 @@ test("四种协议原样携带可恢复失败工具结果", async () => {
     {
       protocol: "anthropic-messages",
       endpoint: "https://api.example/v1/messages",
-      payload: { content: [{ type: "text", text: "继续" }] },
+      payload: { type: "message", role: "assistant", content: [{ type: "text", text: "继续" }] },
       getResult(body) {
         return body.messages
           .flatMap((item) => Array.isArray(item.content) ? item.content : [])
@@ -219,7 +238,7 @@ test("四种协议原样携带可恢复失败工具结果", async () => {
     {
       protocol: "google-gemini",
       endpoint: "https://api.example/v1beta/models/gemini-2.5-flash:generateContent",
-      payload: { candidates: [{ content: { parts: [{ text: "继续" }] } }] },
+      payload: { candidates: [{ content: { parts: [{ text: "继续" }] }, finishReason: "STOP" }] },
       getResult(body) {
         const result = body.contents
           .flatMap((item) => item.parts)
@@ -238,6 +257,172 @@ test("四种协议原样携带可恢复失败工具结果", async () => {
       assert.deepEqual(typeof result === "string" ? JSON.parse(result) : result, recoverableError);
     }, recoverableInput);
   }
+});
+
+test("模型发现以外的生成错误也会统一脱敏认证信息", async () => {
+  const secretMarkers = ["provider-secret", "json-secret", "basic-secret", "bearer-secret", "query-secret"];
+  const client = createProviderClient({
+    configLoader: async () => config("openai-responses", "https://api.example/v1/responses"),
+    fetchImpl: async () => new Response([
+      '{"token":"json-secret","authorization":"Basic basic-secret"}',
+      "Authorization: Bearer bearer-secret",
+      "https://provider.example/error?access_token=query-secret",
+      "provider-secret",
+    ].join(" "), { status: 401 }),
+  });
+
+  await assert.rejects(
+    () => client.create({ input: [] }),
+    (error) => {
+      assert.equal(error?.code, "PROVIDER_HTTP_ERROR");
+      for (const marker of secretMarkers) assert.equal(error.message.includes(marker), false);
+      return true;
+    },
+  );
+});
+
+test("Anthropic 和 Gemini 的畸形 HTTP 200 不会变成空成功或重连", async () => {
+  const cases = [
+    {
+      protocol: "anthropic-messages",
+      endpoint: "https://api.example/v1/messages",
+      stream: false,
+    },
+    {
+      protocol: "google-gemini",
+      endpoint: "https://api.example/v1beta/models/gemini-2.5-flash:generateContent",
+      stream: false,
+    },
+    {
+      protocol: "anthropic-messages",
+      endpoint: "https://api.example/v1/messages",
+      stream: true,
+      body: sseFrame("message_stop", { status: "ok" }),
+    },
+    {
+      protocol: "google-gemini",
+      endpoint: "https://api.example/v1beta/models/gemini-2.5-flash:generateContent",
+      stream: true,
+      body: sseFrame("message", { status: "ok" }),
+    },
+  ];
+
+  for (const item of cases) {
+    let requestCount = 0;
+    const client = createProviderClient({
+      configLoader: async () => config(item.protocol, item.endpoint),
+      reconnectDelayMs: 0,
+      maxReconnectAttempts: 1,
+      fetchImpl: async () => {
+        requestCount += 1;
+        return new Response(item.body ?? JSON.stringify({ status: "ok" }), {
+          status: 200,
+          headers: { "Content-Type": item.stream ? "text/event-stream" : "application/json" },
+        });
+      },
+    });
+
+    await assert.rejects(
+      () => client.create({ input: [], ...(item.stream ? { onEvent() {} } : {}) }),
+      (error) => error?.code === "PROVIDER_RESPONSE_INVALID",
+    );
+    assert.equal(requestCount, 1);
+  }
+});
+
+test("Anthropic 流式 thinking 签名和 redacted thinking 会随工具结果原样续传", async () => {
+  const requests = [];
+  let requestCount = 0;
+  const client = createProviderClient({
+    configLoader: async () => config("anthropic-messages", "https://api.example/v1/messages"),
+    fetchImpl: async (_url, options) => {
+      requests.push(JSON.parse(options.body));
+      requestCount += 1;
+      if (requestCount === 1) {
+        return new Response([
+          sseFrame("message_start", { type: "message_start", message: { role: "assistant", usage: { input_tokens: 1 } } }),
+          sseFrame("content_block_start", { index: 0, content_block: { type: "thinking", thinking: "" } }),
+          sseFrame("content_block_delta", { index: 0, delta: { type: "thinking_delta", thinking: "先读取范围。" } }),
+          sseFrame("content_block_delta", { index: 0, delta: { type: "signature_delta", signature: "stream-signature" } }),
+          sseFrame("content_block_stop", { index: 0 }),
+          sseFrame("content_block_start", { index: 1, content_block: { type: "redacted_thinking", data: "opaque-redacted" } }),
+          sseFrame("content_block_stop", { index: 1 }),
+          sseFrame("content_block_start", { index: 2, content_block: { type: "tool_use", id: "tool-1", name: "read_range", input: {} } }),
+          sseFrame("content_block_delta", { index: 2, delta: { type: "input_json_delta", partial_json: '{"address":"A1"}' } }),
+          sseFrame("content_block_stop", { index: 2 }),
+          sseFrame("message_delta", { usage: { output_tokens: 1 } }),
+          sseFrame("message_stop", { type: "message_stop" }),
+        ].join(""), { status: 200, headers: { "Content-Type": "text/event-stream" } });
+      }
+      return new Response(JSON.stringify({
+        type: "message",
+        role: "assistant",
+        content: [{ type: "text", text: "已完成。" }],
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    },
+  });
+  const firstInput = [{ role: "user", content: [{ type: "input_text", text: "读取 A1" }] }];
+  const first = await client.create({ input: firstInput, onEvent() {} });
+
+  assert.deepEqual(first.output.slice(0, 2), [
+    { type: "reasoning", thinking: "先读取范围。", signature: "stream-signature" },
+    { type: "reasoning", redacted: true, data: "opaque-redacted" },
+  ]);
+
+  await client.create({
+    input: [
+      ...firstInput,
+      ...first.output,
+      { type: "function_call_output", call_id: "tool-1", output: '{"ok":true}' },
+    ],
+  });
+
+  const assistant = requests[1].messages.find((message) => message.role === "assistant");
+  assert.deepEqual(assistant.content, [
+    { type: "thinking", thinking: "先读取范围。", signature: "stream-signature" },
+    { type: "redacted_thinking", data: "opaque-redacted" },
+    { type: "tool_use", id: "tool-1", name: "read_range", input: { address: "A1" } },
+  ]);
+});
+
+test("Anthropic 非流式 redacted thinking 也会在工具续传中保留", async () => {
+  const requests = [];
+  let requestCount = 0;
+  const client = createProviderClient({
+    configLoader: async () => config("anthropic-messages", "https://api.example/v1/messages"),
+    fetchImpl: async (_url, options) => {
+      requests.push(JSON.parse(options.body));
+      requestCount += 1;
+      const payload = requestCount === 1
+        ? {
+            type: "message",
+            role: "assistant",
+            content: [
+              { type: "thinking", thinking: "", signature: "nonstream-signature" },
+              { type: "redacted_thinking", data: "nonstream-redacted" },
+              { type: "tool_use", id: "tool-2", name: "read_range", input: {} },
+            ],
+          }
+        : { type: "message", role: "assistant", content: [{ type: "text", text: "已完成。" }] };
+      return new Response(JSON.stringify(payload), { status: 200, headers: { "Content-Type": "application/json" } });
+    },
+  });
+  const firstInput = [{ role: "user", content: [{ type: "input_text", text: "读取 A1" }] }];
+  const first = await client.create({ input: firstInput });
+
+  await client.create({
+    input: [
+      ...firstInput,
+      ...first.output,
+      { type: "function_call_output", call_id: "tool-2", output: '{"ok":true}' },
+    ],
+  });
+
+  const assistant = requests[1].messages.find((message) => message.role === "assistant");
+  assert.deepEqual(assistant.content.slice(0, 2), [
+    { type: "thinking", thinking: "", signature: "nonstream-signature" },
+    { type: "redacted_thinking", data: "nonstream-redacted" },
+  ]);
 });
 
 test("连接失败后每三秒重连，恢复后继续当前模型步骤", async () => {

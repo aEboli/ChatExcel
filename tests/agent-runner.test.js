@@ -405,6 +405,38 @@ test("恢复会话不会自动发起请求，重置会取消该会话", async ()
   assert.equal(runner.sessionId, null);
 });
 
+test("重置请求失败时保留恢复会话 ID 以便重试", async () => {
+  const cancelError = new Error("本地服务暂不可用");
+  const runner = new AgentRunner({
+    api: {
+      async start() { return { status: "completed", message: "完成" }; },
+      async cancel() { throw cancelError; },
+    },
+    async executeTool() { return { ok: true }; },
+    async requestApproval() { return true; },
+  });
+
+  runner.restoreSession("recovered-session-02");
+
+  await assert.rejects(() => runner.resetSession(), cancelError);
+  assert.equal(runner.sessionId, "recovered-session-02");
+});
+
+test("服务确认清除后可只丢弃匹配的本地会话", () => {
+  const runner = new AgentRunner({
+    api: { async start() { return { status: "completed", message: "完成" }; } },
+    async executeTool() { return { ok: true }; },
+    async requestApproval() { return true; },
+  });
+
+  runner.restoreSession("recovered-session-03");
+
+  assert.equal(runner.discardSession("other-session"), false);
+  assert.equal(runner.sessionId, "recovered-session-03");
+  assert.equal(runner.discardSession("recovered-session-03"), true);
+  assert.equal(runner.sessionId, null);
+});
+
 test("无效范围由模型自动修正且任务窗格不进入错误状态", async (t) => {
   const responses = [
     {

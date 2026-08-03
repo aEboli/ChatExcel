@@ -4,10 +4,14 @@ $scriptDirectory = Split-Path -Parent $MyInvocation.MyCommand.Path
 $projectRoot = (Resolve-Path (Join-Path $scriptDirectory "..")).Path
 $runtimeDirectory = Join-Path $projectRoot ".runtime"
 $pidPath = Join-Path $runtimeDirectory "service.pid"
+$identityPath = Join-Path $runtimeDirectory "service.identity"
 $supervisorPidPath = Join-Path $runtimeDirectory "service-supervisor.pid"
 $supervisorLockPath = Join-Path $runtimeDirectory "service-supervisor.lock"
 $stopPath = Join-Path $runtimeDirectory "service.stop"
 $servicePort = 3210
+$serviceAddress = "127.0.0.1"
+$serviceEntryPath = (Resolve-Path (Join-Path $projectRoot "src\server\index.js")).Path
+$nodePath = (Resolve-Path (Get-Command node -ErrorAction Stop).Source).Path
 
 function Get-RunningSupervisor {
     if (-not (Test-Path -LiteralPath $supervisorPidPath)) {
@@ -82,30 +86,76 @@ function Stop-ManagedSupervisor {
 
 function Stop-TrackedService {
     if (-not (Test-Path -LiteralPath $pidPath)) {
+        Remove-Item -LiteralPath $identityPath -Force -ErrorAction SilentlyContinue
         return $false
     }
 
     $pidText = (Get-Content -Raw -LiteralPath $pidPath).Trim()
     $servicePid = 0
     if (-not [int]::TryParse($pidText, [ref]$servicePid)) {
-        Remove-Item -LiteralPath $pidPath -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $pidPath,$identityPath -Force -ErrorAction SilentlyContinue
         return $false
     }
 
     $process = Get-Process -Id $servicePid -ErrorAction SilentlyContinue
     if ($null -eq $process) {
-        Remove-Item -LiteralPath $pidPath -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $pidPath,$identityPath -Force -ErrorAction SilentlyContinue
         return $false
     }
     if ($process.ProcessName -ne "node") {
-        throw "PID $servicePid is not a Node.js process. No process was stopped."
+        Remove-Item -LiteralPath $pidPath,$identityPath -Force -ErrorAction SilentlyContinue
+        return $false
+    }
+    try {
+        $actualStartTicks = $process.StartTime.ToUniversalTime().Ticks
+        $processInfo = Get-CimInstance -ClassName Win32_Process -Filter "ProcessId = $servicePid" -ErrorAction Stop
+        $actualNodePath = [string]$processInfo.ExecutablePath
+        $commandLine = [string]$processInfo.CommandLine
+    }
+    catch {
+        Remove-Item -LiteralPath $pidPath,$identityPath -Force -ErrorAction SilentlyContinue
+        return $false
+    }
+    $identity = @(Get-Content -LiteralPath $identityPath -ErrorAction SilentlyContinue)
+    $startTicks = 0L
+    if ($identity.Count -lt 3) {
+        $listener = Get-NetTCPConnection -LocalPort $servicePort -State Listen -ErrorAction SilentlyContinue |
+            Where-Object { $_.LocalAddress -eq $serviceAddress -and $_.OwningProcess -eq $servicePid } |
+            Select-Object -First 1
+        $pidRecordedAt = (Get-Item -LiteralPath $pidPath -ErrorAction SilentlyContinue).LastWriteTimeUtc
+        $pidMatchesStart = $null -ne $pidRecordedAt -and
+            [Math]::Abs(($process.StartTime.ToUniversalTime() - $pidRecordedAt).TotalSeconds) -le 5
+        $usesProjectEntry = $commandLine.IndexOf($serviceEntryPath, [StringComparison]::OrdinalIgnoreCase) -ge 0 -or
+            $commandLine -match 'src[\\/]server[\\/]index\.js'
+        if ($null -eq $listener -or
+            -not $pidMatchesStart -or
+            $actualNodePath -ine $nodePath -or
+            -not $usesProjectEntry) {
+            Remove-Item -LiteralPath $pidPath,$identityPath -Force -ErrorAction SilentlyContinue
+            return $false
+        }
+        $identity = @($actualStartTicks, $actualNodePath, $serviceEntryPath)
+        Set-Content -LiteralPath $identityPath -Value $identity -Encoding utf8
+    }
+    if (-not [long]::TryParse($identity[0], [ref]$startTicks)) {
+        Remove-Item -LiteralPath $pidPath,$identityPath -Force -ErrorAction SilentlyContinue
+        return $false
+    }
+    $recordedNodePath = [string]$identity[1]
+    $recordedEntryPath = [string]$identity[2]
+    if ($actualStartTicks -ne $startTicks -or
+        $actualNodePath -ine $recordedNodePath -or
+        $recordedEntryPath -ine $serviceEntryPath -or
+        $commandLine.IndexOf($recordedEntryPath, [StringComparison]::OrdinalIgnoreCase) -lt 0) {
+        Remove-Item -LiteralPath $pidPath,$identityPath -Force -ErrorAction SilentlyContinue
+        return $false
     }
 
     $listener = Get-NetTCPConnection -LocalPort $servicePort -State Listen -ErrorAction SilentlyContinue |
-        Where-Object { $_.OwningProcess -eq $servicePid } |
+        Where-Object { $_.LocalAddress -eq $serviceAddress -and $_.OwningProcess -eq $servicePid } |
         Select-Object -First 1
     if ($null -eq $listener) {
-        Remove-Item -LiteralPath $pidPath -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $pidPath,$identityPath -Force -ErrorAction SilentlyContinue
         return $false
     }
 
@@ -114,7 +164,7 @@ function Stop-TrackedService {
     if ($null -ne (Get-Process -Id $servicePid -ErrorAction SilentlyContinue)) {
         Stop-Process -Id $servicePid -Force -ErrorAction SilentlyContinue
     }
-    Remove-Item -LiteralPath $pidPath -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $pidPath,$identityPath -Force -ErrorAction SilentlyContinue
     return $true
 }
 

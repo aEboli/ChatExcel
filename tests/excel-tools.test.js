@@ -63,6 +63,44 @@ test("接受单元格、矩形、整列、整行和绝对 A1 范围", () => {
   }
 });
 
+test("自动调整保持整列和整行地址兼容", () => {
+  for (const { address, columns, rows } of [
+    { address: "N:R", columns: true, rows: false },
+    { address: "1:3", columns: false, rows: true },
+  ]) {
+    const args = parseAndValidateToolArguments("autofit_range", {
+      worksheet: null,
+      address,
+      columns,
+      rows,
+    });
+    assert.equal(args.address, address);
+  }
+});
+
+test("图表位置只接受有限单元格或矩形范围", () => {
+  const chartArgs = {
+    worksheet: null,
+    sourceAddress: "A1:C10",
+    chartType: "ColumnClustered",
+    seriesBy: "Auto",
+    title: null,
+  };
+
+  const valid = parseAndValidateToolArguments("create_chart", {
+    ...chartArgs,
+    positionAddress: "A1:C10",
+  });
+  assert.equal(valid.positionAddress, "A1:C10");
+
+  for (const positionAddress of ["A:A", "1:1"]) {
+    assert.throws(
+      () => parseAndValidateToolArguments("create_chart", { ...chartArgs, positionAddress }),
+      (error) => error instanceof ToolValidationError && error.code === "RANGE_ADDRESS_INVALID",
+    );
+  }
+});
+
 test("拒绝工作表限定符、联合范围、外部引用和公式地址", () => {
   for (const address of ["Sheet1!A1:B2", "A1:B2,D1:E2", "[Book.xlsx]Sheet1!A1", "=A1:B2"]) {
     assert.throws(
@@ -112,5 +150,25 @@ test("拒绝不规则二维数组和无效颜色", () => {
         wrapText: null,
       }),
     (error) => error instanceof ToolValidationError && error.code === "COLOR_INVALID",
+  );
+});
+
+test("值和公式矩阵超限使用统一修改范围错误码", () => {
+  const oversizedMatrix = Array.from({ length: 51 }, () => Array(100).fill(0));
+  assert.throws(
+    () => parseAndValidateToolArguments("write_values", {
+      worksheet: null,
+      address: "A1:CV51",
+      values: oversizedMatrix,
+    }),
+    (error) => error instanceof ToolValidationError && error.code === "MODIFY_RANGE_TOO_LARGE",
+  );
+  assert.throws(
+    () => parseAndValidateToolArguments("write_formulas", {
+      worksheet: null,
+      address: "A1:CV51",
+      formulas: oversizedMatrix.map((row) => row.map(() => "=1")),
+    }),
+    (error) => error instanceof ToolValidationError && error.code === "MODIFY_RANGE_TOO_LARGE",
   );
 });

@@ -1,6 +1,8 @@
 export const MAX_READ_CELLS = 2_000;
 export const MAX_WRITE_CELLS = 5_000;
 export const MAX_NUMBER_FORMAT_CELLS = MAX_WRITE_CELLS;
+export const MAX_MUTATION_CELLS = MAX_WRITE_CELLS;
+export const MAX_AUTOFIT_DIMENSIONS = MAX_WRITE_CELLS;
 
 export class ToolValidationError extends Error {
   constructor(code, message, path = "$") {
@@ -75,7 +77,7 @@ export const EXCEL_TOOLS = Object.freeze([
     name: "write_values",
     label: "写入值",
     mode: "modify",
-    description: "把二维值数组一次写入尺寸完全相同的目标范围。",
+    description: `把二维值数组一次写入尺寸完全相同的目标范围；最多 ${MAX_MUTATION_CELLS} 个单元格。`,
     parameters: objectSchema({
       worksheet: nullableWorksheet,
       address: rangeAddress,
@@ -86,7 +88,7 @@ export const EXCEL_TOOLS = Object.freeze([
     name: "write_formulas",
     label: "写入公式",
     mode: "modify",
-    description: "把二维 A1 公式数组一次写入尺寸完全相同的目标范围。",
+    description: `把二维 A1 公式数组一次写入尺寸完全相同的目标范围；最多 ${MAX_MUTATION_CELLS} 个单元格。`,
     parameters: objectSchema({
       worksheet: nullableWorksheet,
       address: rangeAddress,
@@ -97,7 +99,7 @@ export const EXCEL_TOOLS = Object.freeze([
     name: "format_range",
     label: "设置范围格式",
     mode: "modify",
-    description: "设置范围的填充色、字体、对齐和换行；不修改值或公式。",
+    description: `设置范围的填充色、字体、对齐和换行；不修改值或公式；最多 ${MAX_MUTATION_CELLS} 个单元格。`,
     parameters: objectSchema({
       worksheet: nullableWorksheet,
       address: rangeAddress,
@@ -132,7 +134,7 @@ export const EXCEL_TOOLS = Object.freeze([
     name: "autofit_range",
     label: "自动调整行列",
     mode: "modify",
-    description: "自动调整目标范围涉及的列宽和/或行高。",
+    description: `自动调整目标范围涉及的列宽和/或行高；每次最多 ${MAX_AUTOFIT_DIMENSIONS} 行或列。`,
     parameters: objectSchema({
       worksheet: nullableWorksheet,
       address: rangeAddress,
@@ -144,7 +146,7 @@ export const EXCEL_TOOLS = Object.freeze([
     name: "clear_range",
     label: "清除范围",
     mode: "modify",
-    description: "清除目标范围的全部内容、仅内容或仅格式。",
+    description: `清除目标范围的全部内容、仅内容或仅格式；最多 ${MAX_MUTATION_CELLS} 个单元格。`,
     parameters: objectSchema({
       worksheet: nullableWorksheet,
       address: rangeAddress,
@@ -174,7 +176,7 @@ export const EXCEL_TOOLS = Object.freeze([
     name: "create_table",
     label: "创建表格",
     mode: "modify",
-    description: "从目标数据范围创建原生 Excel 表格。",
+    description: `从目标数据范围创建原生 Excel 表格；最多 ${MAX_MUTATION_CELLS} 个单元格。`,
     parameters: objectSchema({
       worksheet: nullableWorksheet,
       address: rangeAddress,
@@ -187,7 +189,7 @@ export const EXCEL_TOOLS = Object.freeze([
     name: "create_chart",
     label: "创建图表",
     mode: "modify",
-    description: "从数据范围创建原生 Excel 图表，并可设置标题和放置范围。",
+    description: `从数据范围创建原生 Excel 图表，并可设置标题和放置范围；源范围最多 ${MAX_MUTATION_CELLS} 个单元格。`,
     parameters: objectSchema({
       worksheet: nullableWorksheet,
       sourceAddress: rangeAddress,
@@ -212,7 +214,7 @@ export const EXCEL_TOOLS = Object.freeze([
     name: "sort_range",
     label: "排序范围",
     mode: "modify",
-    description: "按目标范围内从 1 开始的相对列号，对整块范围按行排序。",
+    description: `按目标范围内从 1 开始的相对列号，对整块范围按行排序；最多 ${MAX_MUTATION_CELLS} 个单元格。`,
     parameters: objectSchema({
       worksheet: nullableWorksheet,
       address: rangeAddress,
@@ -330,10 +332,24 @@ const rangeAddressPattern = new RegExp(
   `^(?:${cellReference}(?::${cellReference})?|${columnReference}:${columnReference}|${rowReference}:${rowReference})$`,
   "i",
 );
+const cellOrRectangleAddressPattern = new RegExp(
+  `^${cellReference}(?::${cellReference})?$`,
+  "i",
+);
 
 function validateAddress(address, path) {
   if (!rangeAddressPattern.test(address)) {
     throw new ToolValidationError("RANGE_ADDRESS_INVALID", `${path} 必须是有效 A1 范围。`, path);
+  }
+}
+
+function validateCellOrRectangleAddress(address, path) {
+  if (!cellOrRectangleAddressPattern.test(address)) {
+    throw new ToolValidationError(
+      "RANGE_ADDRESS_INVALID",
+      `${path} 必须是单个单元格或矩形 A1 范围。`,
+      path,
+    );
   }
 }
 
@@ -344,7 +360,7 @@ function validateMatrix(values, path) {
   }
   if (values.length * columns > MAX_WRITE_CELLS) {
     throw new ToolValidationError(
-      "WRITE_RANGE_TOO_LARGE",
+      "MODIFY_RANGE_TOO_LARGE",
       `${path} 超过 ${MAX_WRITE_CELLS} 个单元格限制。`,
       path,
     );
@@ -358,10 +374,13 @@ function validateSemanticArguments(name, args) {
     }
   }
 
-  for (const key of ["address", "sourceAddress", "positionAddress"]) {
+  for (const key of ["address", "sourceAddress"]) {
     if (typeof args[key] === "string") {
       validateAddress(args[key], `$.${key}`);
     }
+  }
+  if (typeof args.positionAddress === "string") {
+    validateCellOrRectangleAddress(args.positionAddress, "$.positionAddress");
   }
 
   if (Object.hasOwn(args, "values")) {

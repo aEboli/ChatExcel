@@ -351,6 +351,7 @@ export function createApp({
             attachments: req.body?.attachments,
             model: req.body?.model,
             reasoningEffort: req.body?.reasoningEffort,
+            workbookBinding: req.body?.workbookBinding,
           },
           { onEvent },
         ),
@@ -419,7 +420,7 @@ export function createApp({
     requireAllowedOrigin(allowedOrigins),
     async (req, res) => {
       const manager = requireSessionManager(sessionManager);
-      await manager.cancel(req.params.sessionId);
+      await manager.clearRecoverySession(req.params.sessionId);
       res.status(204).end();
     },
   );

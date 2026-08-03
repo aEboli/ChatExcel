@@ -34,10 +34,42 @@ internal sealed class LegacyWorkbookHost : Form
     private const int XlAscending = 1;
     private const int XlDescending = 2;
     private const int XlSortRows = 2;
+    private const int MaxMutationCells = 5_000;
+    private const int MaxNumberFormatCells = MaxMutationCells;
+    private const int MaxAutofitDimensions = 5_000;
     private const int SheetActivateDispId = 0x619;
     private const int SheetChangeDispId = 0x61c;
     private const int WorkbookBeforeCloseDispId = 0x622;
     private static readonly Guid AppEventsIid = new("00024413-0000-0000-C000-000000000046");
+    private static readonly HashSet<string> FormulaErrorValues = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "#BLOCKED!",
+        "#BUSY!",
+        "#CALC!",
+        "#CONNECT!",
+        "#DIV/0!",
+        "#FIELD!",
+        "#GETTING_DATA",
+        "#N/A",
+        "#NAME?",
+        "#NULL!",
+        "#NUM!",
+        "#REF!",
+        "#SPILL!",
+        "#UNKNOWN!",
+        "#VALUE!",
+    };
+    private static readonly HashSet<ushort> FormulaErrorCodes = new()
+    {
+        2000,
+        2007,
+        2015,
+        2023,
+        2029,
+        2036,
+        2042,
+        2043,
+    };
     private readonly string sessionId;
     private readonly WebView2 webView = new() { Dock = DockStyle.Fill };
     private readonly System.Windows.Forms.Timer windowTimer = new() { Interval = 400 };
@@ -49,10 +81,14 @@ internal sealed class LegacyWorkbookHost : Form
     private WorkbookBeforeCloseEventHandler? workbookBeforeCloseHandler;
     private bool suppressEvents;
     private bool workbookClosed;
+    private bool workbookClosePending;
     private int revision;
     private int activeSheetRevision;
     private IntPtr excelWindow;
     private bool released;
+    private Exception? webViewInitializationFailure;
+
+    internal Exception? WebViewInitializationFailure => webViewInitializationFailure;
 
     public LegacyWorkbookHost(string workbookPath, string sessionId)
     {
@@ -82,11 +118,13 @@ internal sealed class LegacyWorkbookHost : Form
 
     private void OpenWorkbook(string workbookPath)
     {
+        var createdExcel = false;
         try
         {
             var excelType = Type.GetTypeFromProgID("Excel.Application", throwOnError: true)!;
             excel = Activator.CreateInstance(excelType)
                 ?? throw new InvalidOperationException("无法创建 Excel.Application COM 实例。");
+            createdExcel = true;
             excel.AskToUpdateLinks = false;
             excel.DisplayAlerts = true;
             excel.Visible = false;
@@ -111,7 +149,7 @@ internal sealed class LegacyWorkbookHost : Form
             }
             finally
             {
-                ReleaseCom(workbooks);
+                ReleaseCom((object?)workbooks);
             }
             excel.Visible = true;
             excelWindow = new IntPtr(excel.Hwnd);
@@ -124,9 +162,23 @@ internal sealed class LegacyWorkbookHost : Form
         }
         catch (Exception error) when (error is COMException or TypeLoadException or InvalidOperationException or RuntimeBinderException)
         {
+            QuitOwnedExcelAfterOpenFailure(createdExcel);
             ReleaseExcelReferences();
             throw new LauncherInputException($"无法用 Microsoft Excel 打开该 .xls 工作簿：{SafeComMessage(error)}");
         }
+        catch
+        {
+            QuitOwnedExcelAfterOpenFailure(createdExcel);
+            ReleaseExcelReferences();
+            throw;
+        }
+    }
+
+    private void QuitOwnedExcelAfterOpenFailure(bool createdExcel)
+    {
+        if (!createdExcel || excel is null) return;
+        try { excel.DisplayAlerts = false; } catch { }
+        try { excel.Quit(); } catch { }
     }
 
     private async Task InitializeWebViewAsync()
@@ -149,13 +201,9 @@ internal sealed class LegacyWorkbookHost : Form
         }
         catch (Exception error)
         {
-            MessageBox.Show(
-                this,
-                $"无法启动 ChatExcel 原生窗格。请确认已安装 Microsoft Edge WebView2 Runtime。\n\n{error.Message}",
-                "ChatExcel Launcher",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Error);
-            Close();
+            if (IsDisposed || Disposing) return;
+            webViewInitializationFailure = error;
+            if (!IsDisposed) Close();
         }
     }
 
@@ -203,14 +251,20 @@ internal sealed class LegacyWorkbookHost : Form
         }
         finally
         {
-            ReleaseCom(worksheet);
+            ReleaseCom((object?)worksheet);
         }
     }
 
     private object Undo()
     {
+        dynamic? activeWorkbook = null;
         try
         {
+            activeWorkbook = excel!.ActiveWorkbook;
+            if (!IsSameComObject(activeWorkbook, (object)workbook!))
+            {
+                throw new LegacyWorkbookException("UNDO_UNAVAILABLE", "请先激活 ChatExcel 绑定的 .xls 工作簿，再执行撤销。");
+            }
             suppressEvents = true;
             excel!.Undo();
             revision += 1;
@@ -223,6 +277,8 @@ internal sealed class LegacyWorkbookHost : Form
         finally
         {
             suppressEvents = false;
+            // The active workbook can be a separately open user workbook. Do not
+            // release its RCW while that caller may still need it after rejection.
         }
     }
 
@@ -291,10 +347,10 @@ internal sealed class LegacyWorkbookHost : Form
             for (var index = 1; index <= worksheets.Count; index += 1)
             {
                 dynamic worksheet = worksheets[index];
-                try { names.Add(worksheet.Name); } finally { ReleaseCom(worksheet); }
+                try { names.Add(worksheet.Name); } finally { ReleaseCom((object?)worksheet); }
             }
             active = GetActiveWorksheet();
-            selection = GetSelectedRange();
+            selection = GetSelectedRange(out var selectionIsRange);
             return new
             {
                 ok = true,
@@ -307,29 +363,29 @@ internal sealed class LegacyWorkbookHost : Form
                         address = RangeAddress(selection),
                         rowCount = selection.Rows.Count,
                         columnCount = selection.Columns.Count,
-                        mode = IsExcelRange(excel!.Selection) ? "range" : "activeCell",
+                        mode = selectionIsRange ? "range" : "activeCell",
                     },
                 },
             };
         }
         finally
         {
-            ReleaseCom(selection);
-            ReleaseCom(active);
-            ReleaseCom(worksheets);
+            ReleaseCom((object?)selection);
+            ReleaseCom((object?)active);
+            ReleaseCom((object?)worksheets);
         }
     }
 
     private object GetSelection()
     {
-        var range = GetSelectedRange();
-        try { return ReadRangeObject(range); } finally { ReleaseCom(range); }
+        var range = GetSelectedRange(out _);
+        try { return ReadRangeObject(range); } finally { ReleaseCom((object?)range); }
     }
 
     private object ReadRange(JsonElement arguments)
     {
         var range = GetRange(arguments);
-        try { return ReadRangeObject(range); } finally { ReleaseCom(range); }
+        try { return ReadRangeObject(range); } finally { ReleaseCom((object?)range); }
     }
 
     private object ReadRangeObject(dynamic range)
@@ -354,12 +410,12 @@ internal sealed class LegacyWorkbookHost : Form
                 cellCount,
                 values = ToRows(range.Value2, rowCount, columnCount),
                 formulas = ToRows(range.Formula, rowCount, columnCount),
-                numberFormat = ToRows(range.NumberFormat, rowCount, columnCount),
+                numberFormat = ReadNumberFormatRows(range, rowCount, columnCount),
             };
         }
         finally
         {
-            ReleaseCom(worksheet);
+            ReleaseCom((object?)worksheet);
         }
     }
 
@@ -368,19 +424,40 @@ internal sealed class LegacyWorkbookHost : Form
         var range = GetRange(arguments);
         try
         {
+            var inspection = InspectMutationRange(range);
             var matrix = RequiredMatrix(arguments, property);
-            var rowCount = range.Rows.Count;
-            var columnCount = range.Columns.Count;
+            var rowCount = inspection.RowCount;
+            var columnCount = inspection.ColumnCount;
             if (matrix.GetLength(0) != rowCount || matrix.GetLength(1) != columnCount)
             {
                 throw new LegacyWorkbookException("MATRIX_SIZE_MISMATCH", $"二维数组尺寸与目标范围不一致；目标为 {rowCount} 行 x {columnCount} 列。");
             }
-            if (formulas) range.Formula = matrix; else range.Value2 = matrix;
-            return RangeResult(range, new { rowCount, columnCount });
+            if (formulas)
+            {
+                range.Formula = matrix;
+                range.Calculate();
+            }
+            else
+            {
+                range.Value2 = matrix;
+            }
+            var contents = ReadRangeContents(range, rowCount, columnCount);
+            var matches = MatrixMatches(formulas ? contents.Formulas : contents.Values, matrix, rowCount, columnCount);
+            AssertVerification(matches, "WRITE_VERIFICATION_FAILED", "Excel 未能确认值或公式已按请求写入。");
+            return RangeResult(
+                range,
+                new { rowCount, columnCount },
+                inspection.Impact,
+                new Dictionary<string, object?>
+                {
+                    ["kind"] = formulas ? "formulas" : "values",
+                    ["matches"] = true,
+                    ["formulaErrorCells"] = contents.FormulaErrorCells,
+                });
         }
         finally
         {
-            ReleaseCom(range);
+            ReleaseCom((object?)range);
         }
     }
 
@@ -391,6 +468,7 @@ internal sealed class LegacyWorkbookHost : Form
         dynamic? font = null;
         try
         {
+            var inspection = InspectMutationRange(range);
             interior = range.Interior;
             font = range.Font;
             if (OptionalString(arguments, "fillColor") is { } fillColor) interior.Color = ColorTranslator.ToOle(ColorTranslator.FromHtml(fillColor));
@@ -401,13 +479,17 @@ internal sealed class LegacyWorkbookHost : Form
             if (OptionalString(arguments, "horizontalAlignment") is { } horizontal) range.HorizontalAlignment = HorizontalAlignment(horizontal);
             if (OptionalString(arguments, "verticalAlignment") is { } vertical) range.VerticalAlignment = VerticalAlignment(vertical);
             if (OptionalBoolean(arguments, "wrapText") is { } wrapText) range.WrapText = wrapText;
-            return RangeResult(range);
+            return RangeResult(
+                range,
+                new { rowCount = inspection.RowCount, columnCount = inspection.ColumnCount },
+                inspection.Impact,
+                VerifyRangeFormat(range, arguments));
         }
         finally
         {
-            ReleaseCom(font);
-            ReleaseCom(interior);
-            ReleaseCom(range);
+            ReleaseCom((object?)font);
+            ReleaseCom((object?)interior);
+            ReleaseCom((object?)range);
         }
     }
 
@@ -416,10 +498,26 @@ internal sealed class LegacyWorkbookHost : Form
         var range = GetRange(arguments);
         try
         {
-            range.NumberFormat = RequiredString(arguments, "formatCode");
-            return RangeResult(range);
+            var inspection = InspectMutationRange(range, numberFormat: true);
+            var formatCode = RequiredString(arguments, "formatCode");
+            range.NumberFormat = formatCode;
+            var numberFormats = ReadNumberFormatRows(range, inspection.RowCount, inspection.ColumnCount);
+            var matches = NumberFormatsMatch(numberFormats, formatCode, inspection.RowCount, inspection.ColumnCount);
+            AssertVerification(matches, "NUMBER_FORMAT_VERIFICATION_FAILED", "Excel 未能确认数字格式已按请求应用。");
+            var contents = ReadRangeContents(range, inspection.RowCount, inspection.ColumnCount);
+            return RangeResult(
+                range,
+                new { rowCount = inspection.RowCount, columnCount = inspection.ColumnCount },
+                inspection.Impact,
+                new Dictionary<string, object?>
+                {
+                    ["kind"] = "numberFormat",
+                    ["matches"] = true,
+                    ["formatCode"] = formatCode,
+                    ["formulaErrorCells"] = contents.FormulaErrorCells,
+                });
         }
-        finally { ReleaseCom(range); }
+        finally { ReleaseCom((object?)range); }
     }
 
     private object AutofitRange(JsonElement arguments)
@@ -429,23 +527,32 @@ internal sealed class LegacyWorkbookHost : Form
         dynamic? entireRows = null;
         try
         {
-            if (RequiredBoolean(arguments, "columns"))
+            var columns = RequiredBoolean(arguments, "columns");
+            var rows = RequiredBoolean(arguments, "rows");
+            var dimensions = GetRangeDimensions((object)range);
+            AssertAutofitDimensions(dimensions.RowCount, dimensions.ColumnCount, columns, rows);
+            var impact = CreateAutofitImpact(range, dimensions.RowCount, dimensions.ColumnCount, columns, rows);
+            if (columns)
             {
                 entireColumns = range.EntireColumn;
                 entireColumns.AutoFit();
             }
-            if (RequiredBoolean(arguments, "rows"))
+            if (rows)
             {
                 entireRows = range.EntireRow;
                 entireRows.AutoFit();
             }
-            return RangeResult(range);
+            return RangeResult(
+                range,
+                new { rowCount = dimensions.RowCount, columnCount = dimensions.ColumnCount },
+                impact,
+                CreateAutofitVerification(entireColumns, entireRows, columns, rows));
         }
         finally
         {
-            ReleaseCom(entireRows);
-            ReleaseCom(entireColumns);
-            ReleaseCom(range);
+            ReleaseCom((object?)entireRows);
+            ReleaseCom((object?)entireColumns);
+            ReleaseCom((object?)range);
         }
     }
 
@@ -454,16 +561,36 @@ internal sealed class LegacyWorkbookHost : Form
         var range = GetRange(arguments);
         try
         {
-            switch (RequiredString(arguments, "applyTo"))
+            var inspection = InspectMutationRange(range);
+            var applyTo = RequiredString(arguments, "applyTo");
+            switch (applyTo)
             {
                 case "All": range.Clear(); break;
                 case "Contents": range.ClearContents(); break;
                 case "Formats": range.ClearFormats(); break;
                 default: throw new LegacyWorkbookException("TOOL_ARGUMENT_ENUM", "清除模式无效。");
             }
-            return RangeResult(range);
+            var contents = ReadRangeContents(range, inspection.RowCount, inspection.ColumnCount);
+            var matches = applyTo switch
+            {
+                "All" or "Contents" => MatrixIsBlank(contents.Values) && MatrixIsBlank(contents.Formulas),
+                "Formats" => MatricesEqual(contents.Values, inspection.Contents.Values) && MatricesEqual(contents.Formulas, inspection.Contents.Formulas),
+                _ => false,
+            };
+            AssertVerification(matches, "CLEAR_VERIFICATION_FAILED", "Excel 未能确认目标范围已按请求清除。");
+            return RangeResult(
+                range,
+                new { rowCount = inspection.RowCount, columnCount = inspection.ColumnCount },
+                inspection.Impact,
+                new Dictionary<string, object?>
+                {
+                    ["kind"] = "clear",
+                    ["matches"] = true,
+                    ["applyTo"] = applyTo,
+                    ["formulaErrorCells"] = contents.FormulaErrorCells,
+                });
         }
-        finally { ReleaseCom(range); }
+        finally { ReleaseCom((object?)range); }
     }
 
     private object AddWorksheet(JsonElement arguments)
@@ -480,8 +607,8 @@ internal sealed class LegacyWorkbookHost : Form
         }
         finally
         {
-            ReleaseCom(worksheet);
-            ReleaseCom(worksheets);
+            ReleaseCom((object?)worksheet);
+            ReleaseCom((object?)worksheets);
         }
     }
 
@@ -496,17 +623,25 @@ internal sealed class LegacyWorkbookHost : Form
             worksheet.Name = newName;
             return new { ok = true, target = worksheet.Name, worksheet = worksheet.Name };
         }
-        finally { ReleaseCom(worksheet); }
+        finally { ReleaseCom((object?)worksheet); }
     }
 
     private object CreateTable(JsonElement arguments)
     {
         var range = GetRange(arguments);
-        dynamic worksheet = range.Worksheet;
-        dynamic listObjects = worksheet.ListObjects;
+        dynamic? worksheet = null;
+        dynamic? listObjects = null;
         dynamic? table = null;
+        TableRollbackSnapshot? rollback = null;
+        var rollbackPending = false;
         try
         {
+            var requestedName = OptionalString(arguments, "name");
+            if (requestedName is not null) EnsureTableNameAvailable(requestedName);
+            var inspection = InspectMutationRange(range);
+            rollback = CaptureTableRollback((object?)range, inspection);
+            worksheet = range.Worksheet;
+            listObjects = worksheet.ListObjects;
             table = listObjects.Add(
                 XlSrcRange,
                 range,
@@ -515,42 +650,69 @@ internal sealed class LegacyWorkbookHost : Form
                 Type.Missing);
             try
             {
-                if (OptionalString(arguments, "name") is { } name) table.Name = name;
+                if (requestedName is { } name) table.Name = name;
                 if (OptionalString(arguments, "style") is { } style) table.TableStyle = style;
             }
             catch
             {
-                table.Delete();
+                rollbackPending = true;
+                try
+                {
+                    table.Delete();
+                    ReleaseCom((object?)table);
+                    table = null;
+                }
+                catch
+                {
+                    // Keep the original configuration error as the tool result.
+                }
                 throw;
             }
-            return new
-            {
-                ok = true,
-                target = $"{worksheet.Name}!{RangeAddress(range)}",
-                worksheet = worksheet.Name,
-                table = table.Name,
-                style = OptionalString(arguments, "style"),
-            };
+            var requestedStyle = OptionalString(arguments, "style");
+            var tableName = Convert.ToString(table.Name) ?? string.Empty;
+            var tableStyle = NormalizeComValue(table.TableStyle);
+            var matches = tableName.Length > 0 &&
+                (requestedName is null || string.Equals(tableName, requestedName, StringComparison.OrdinalIgnoreCase)) &&
+                (requestedStyle is null || string.Equals(Convert.ToString(tableStyle), requestedStyle, StringComparison.OrdinalIgnoreCase));
+            AssertVerification(matches, "TABLE_VERIFICATION_FAILED", "Excel 未能确认新建表格的名称或样式。");
+            return RangeResult(
+                range,
+                new { table = tableName, style = requestedStyle },
+                inspection.Impact,
+                new Dictionary<string, object?>
+                {
+                    ["kind"] = "table",
+                    ["matches"] = true,
+                    ["table"] = tableName,
+                    ["style"] = tableStyle,
+                });
         }
         finally
         {
-            ReleaseCom(table);
-            ReleaseCom(listObjects);
-            ReleaseCom(worksheet);
-            ReleaseCom(range);
+            ReleaseCom((object?)table);
+            ReleaseCom((object?)listObjects);
+            ReleaseCom((object?)worksheet);
+            if (rollbackPending && rollback is not null)
+            {
+                try { RestoreTableRollback((object)range, rollback); }
+                catch (Exception) { }
+            }
+            ReleaseCom((object?)range);
         }
     }
 
     private object CreateChart(JsonElement arguments)
     {
         var range = GetRange(arguments, "sourceAddress");
-        dynamic worksheet = range.Worksheet;
+        dynamic? worksheet = null;
         dynamic? chartObjects = null;
         dynamic? chartObject = null;
         dynamic? chart = null;
         dynamic? position = null;
         try
         {
+            var inspection = InspectMutationRange(range);
+            worksheet = range.Worksheet;
             double left = Convert.ToDouble(range.Left);
             double top = Convert.ToDouble(range.Top) + Convert.ToDouble(range.Height) + 12;
             double width = 480;
@@ -583,23 +745,30 @@ internal sealed class LegacyWorkbookHost : Form
                 chartObject.Delete();
                 throw;
             }
-            return new
-            {
-                ok = true,
-                target = $"{worksheet.Name}!{RangeAddress(range)}",
-                worksheet = worksheet.Name,
-                chart = chartObject.Name,
-                chartType = RequiredString(arguments, "chartType"),
-            };
+            var requestedChartType = RequiredString(arguments, "chartType");
+            var chartName = Convert.ToString(chartObject.Name) ?? string.Empty;
+            var matches = chartName.Length > 0 && Convert.ToInt32(chart.ChartType) == ChartType(requestedChartType);
+            AssertVerification(matches, "CHART_VERIFICATION_FAILED", "Excel 未能确认新建图表的类型或对象标识。");
+            return RangeResult(
+                range,
+                new { chart = chartName, chartType = requestedChartType },
+                inspection.Impact,
+                new Dictionary<string, object?>
+                {
+                    ["kind"] = "chart",
+                    ["matches"] = true,
+                    ["chart"] = chartName,
+                    ["chartType"] = requestedChartType,
+                });
         }
         finally
         {
-            ReleaseCom(position);
-            ReleaseCom(chart);
-            ReleaseCom(chartObject);
-            ReleaseCom(chartObjects);
-            ReleaseCom(worksheet);
-            ReleaseCom(range);
+            ReleaseCom((object?)position);
+            ReleaseCom((object?)chart);
+            ReleaseCom((object?)chartObject);
+            ReleaseCom((object?)chartObjects);
+            ReleaseCom((object?)worksheet);
+            ReleaseCom((object?)range);
         }
     }
 
@@ -609,23 +778,38 @@ internal sealed class LegacyWorkbookHost : Form
         dynamic? key = null;
         try
         {
+            var inspection = InspectMutationRange(range);
             var keyColumn = RequiredInt32(arguments, "keyColumn");
-            if (keyColumn > range.Columns.Count)
+            if (keyColumn > inspection.ColumnCount)
             {
-                throw new LegacyWorkbookException("SORT_KEY_OUT_OF_RANGE", $"排序列 {keyColumn} 超出目标范围的 {range.Columns.Count} 列。");
+                throw new LegacyWorkbookException("SORT_KEY_OUT_OF_RANGE", $"排序列 {keyColumn} 超出目标范围的 {inspection.ColumnCount} 列。");
             }
+            var direction = RequiredString(arguments, "direction");
             key = range.Columns[keyColumn];
             range.Sort(
                 Key1: key,
-                Order1: RequiredString(arguments, "direction") == "Ascending" ? XlAscending : XlDescending,
+                Order1: direction == "Ascending" ? XlAscending : XlDescending,
                 Header: RequiredBoolean(arguments, "hasHeaders") ? XlYes : XlNo,
                 Orientation: XlSortRows);
-            return RangeResult(range, new { keyColumn, direction = RequiredString(arguments, "direction") });
+            var contents = ReadRangeContents(range, inspection.RowCount, inspection.ColumnCount);
+            return RangeResult(
+                range,
+                new { keyColumn, direction },
+                inspection.Impact,
+                new Dictionary<string, object?>
+                {
+                    ["kind"] = "sort",
+                    ["matches"] = true,
+                    ["keyColumn"] = keyColumn,
+                    ["direction"] = direction,
+                    ["keyValues"] = SampleColumn(contents.Values, keyColumn - 1),
+                    ["formulaErrorCells"] = contents.FormulaErrorCells,
+                });
         }
         finally
         {
-            ReleaseCom(key);
-            ReleaseCom(range);
+            ReleaseCom((object?)key);
+            ReleaseCom((object?)range);
         }
     }
 
@@ -637,26 +821,83 @@ internal sealed class LegacyWorkbookHost : Form
         {
             return worksheet.Range[RequiredString(arguments, addressProperty)];
         }
-        finally { ReleaseCom(worksheet); }
+        finally { ReleaseCom((object?)worksheet); }
     }
 
-    private dynamic GetSelectedRange()
+    private dynamic GetSelectedRange(out bool selectionIsRange)
     {
-        dynamic selection = excel!.Selection;
-        if (IsExcelRange(selection)) return selection;
-        ReleaseCom(selection);
-        return excel.ActiveCell;
+        dynamic? window = null;
+        dynamic? selection = null;
+        try
+        {
+            window = GetWorkbookWindow();
+            selection = window.Selection;
+            if (IsExcelRange(selection))
+            {
+                selectionIsRange = true;
+                var selectedRange = selection;
+                selection = null;
+                return selectedRange;
+            }
+
+            selectionIsRange = false;
+            return window.ActiveCell;
+        }
+        finally
+        {
+            ReleaseCom((object?)selection);
+            ReleaseCom((object?)window);
+        }
     }
 
     private dynamic GetActiveWorksheet()
     {
-        dynamic worksheet = workbook!.ActiveSheet;
-        if (!IsExcelWorksheet(worksheet))
+        dynamic? window = null;
+        dynamic? worksheet = null;
+        try
         {
-            ReleaseCom(worksheet);
-            throw new LegacyWorkbookException("WORKSHEET_UNAVAILABLE", "当前活动对象不是工作表。");
+            window = GetWorkbookWindow();
+            worksheet = window.ActiveSheet;
+            if (!IsExcelWorksheet(worksheet))
+            {
+                throw new LegacyWorkbookException("WORKSHEET_UNAVAILABLE", "当前活动对象不是工作表。");
+            }
+
+            var activeWorksheet = worksheet;
+            worksheet = null;
+            return activeWorksheet;
         }
-        return worksheet;
+        finally
+        {
+            ReleaseCom((object?)worksheet);
+            ReleaseCom((object?)window);
+        }
+    }
+
+    private dynamic GetWorkbookWindow()
+    {
+        dynamic? windows = null;
+        try
+        {
+            windows = workbook!.Windows;
+            if (Convert.ToInt32(windows.Count) < 1)
+            {
+                throw new LegacyWorkbookException("WORKBOOK_WINDOW_UNAVAILABLE", "绑定的 .xls 工作簿没有可用窗口。");
+            }
+            return windows[1];
+        }
+        catch (COMException error)
+        {
+            throw new LegacyWorkbookException("WORKBOOK_WINDOW_UNAVAILABLE", $"无法访问绑定工作簿窗口：{SafeComMessage(error)}");
+        }
+        catch (RuntimeBinderException)
+        {
+            throw new LegacyWorkbookException("WORKBOOK_WINDOW_UNAVAILABLE", "无法访问绑定工作簿窗口。");
+        }
+        finally
+        {
+            ReleaseCom((object?)windows);
+        }
     }
 
     private dynamic GetWorksheet(string name)
@@ -664,7 +905,7 @@ internal sealed class LegacyWorkbookHost : Form
         dynamic worksheets = workbook!.Worksheets;
         try { return worksheets[name]; }
         catch (COMException) { throw new LegacyWorkbookException("WORKSHEET_NOT_FOUND", $"找不到工作表“{name}”。"); }
-        finally { ReleaseCom(worksheets); }
+        finally { ReleaseCom((object?)worksheets); }
     }
 
     private void EnsureWorksheetMissing(string name)
@@ -682,12 +923,405 @@ internal sealed class LegacyWorkbookHost : Form
         }
         finally
         {
-            ReleaseCom(worksheet);
-            ReleaseCom(worksheets);
+            ReleaseCom((object?)worksheet);
+            ReleaseCom((object?)worksheets);
         }
     }
 
-    private object RangeResult(dynamic range, object? details = null)
+    private void EnsureTableNameAvailable(string name)
+    {
+        dynamic? worksheets = null;
+        try
+        {
+            worksheets = workbook!.Worksheets;
+            var worksheetCount = Convert.ToInt32(worksheets.Count);
+            for (var worksheetIndex = 1; worksheetIndex <= worksheetCount; worksheetIndex += 1)
+            {
+                dynamic? worksheet = null;
+                dynamic? listObjects = null;
+                dynamic? table = null;
+                try
+                {
+                    worksheet = worksheets[worksheetIndex];
+                    listObjects = worksheet.ListObjects;
+                    var tableCount = Convert.ToInt32(listObjects.Count);
+                    for (var tableIndex = 1; tableIndex <= tableCount; tableIndex += 1)
+                    {
+                        table = listObjects[tableIndex];
+                        if (string.Equals(Convert.ToString(table.Name), name, StringComparison.OrdinalIgnoreCase))
+                        {
+                            throw new LegacyWorkbookException("TABLE_NAME_EXISTS", $"表格名称“{name}”已存在。");
+                        }
+                        ReleaseCom((object?)table);
+                        table = null;
+                    }
+                }
+                finally
+                {
+                    ReleaseCom((object?)table);
+                    ReleaseCom((object?)listObjects);
+                    ReleaseCom((object?)worksheet);
+                }
+            }
+        }
+        finally
+        {
+            ReleaseCom((object?)worksheets);
+        }
+    }
+
+    private MutationInspection InspectMutationRange(dynamic range, bool numberFormat = false)
+    {
+        var dimensions = GetRangeDimensions((object)range);
+        var limit = numberFormat ? MaxNumberFormatCells : MaxMutationCells;
+        if (dimensions.CellCount > limit)
+        {
+            var code = numberFormat ? "NUMBER_FORMAT_RANGE_TOO_LARGE" : "MODIFY_RANGE_TOO_LARGE";
+            var operation = numberFormat ? "数字格式" : "修改";
+            throw new LegacyWorkbookException(
+                code,
+                $"目标范围包含 {dimensions.CellCount} 个单元格，超过 {limit} 个{operation}限制；请缩小范围或分块执行。");
+        }
+
+        var contents = ReadRangeContents(range, dimensions.RowCount, dimensions.ColumnCount);
+        return new MutationInspection(
+            dimensions.RowCount,
+            dimensions.ColumnCount,
+            dimensions.CellCount,
+            CreateMutationImpact(range, dimensions.RowCount, dimensions.ColumnCount, dimensions.CellCount, contents),
+            contents);
+    }
+
+    private static (int RowCount, int ColumnCount, long CellCount) GetRangeDimensions(object rangeObject)
+    {
+        dynamic range = rangeObject;
+        var rowCount = Convert.ToInt32(range.Rows.Count);
+        var columnCount = Convert.ToInt32(range.Columns.Count);
+        return (rowCount, columnCount, checked((long)rowCount * columnCount));
+    }
+
+    private static void AssertAutofitDimensions(int rowCount, int columnCount, bool columns, bool rows)
+    {
+        if (columns && columnCount > MaxAutofitDimensions)
+        {
+            throw new LegacyWorkbookException(
+                "AUTOFIT_TARGET_TOO_LARGE",
+                $"自动调整将影响 {columnCount} 列，超过 {MaxAutofitDimensions} 个列限制；请缩小范围。");
+        }
+        if (rows && rowCount > MaxAutofitDimensions)
+        {
+            throw new LegacyWorkbookException(
+                "AUTOFIT_TARGET_TOO_LARGE",
+                $"自动调整将影响 {rowCount} 行，超过 {MaxAutofitDimensions} 个行限制；请缩小范围。");
+        }
+    }
+
+    private static Dictionary<string, object?> CreateMutationImpact(
+        dynamic range,
+        int rowCount,
+        int columnCount,
+        long cellCount,
+        RangeContents contents)
+    {
+        dynamic? worksheet = null;
+        try
+        {
+            worksheet = range.Worksheet;
+            return new Dictionary<string, object?>
+            {
+                ["target"] = $"{worksheet.Name}!{RangeAddress(range)}",
+                ["rowCount"] = rowCount,
+                ["columnCount"] = columnCount,
+                ["cellCount"] = cellCount,
+                ["nonEmptyCells"] = contents.NonEmptyCells,
+                ["formulaCells"] = contents.FormulaCells,
+                ["formulaErrorCells"] = contents.FormulaErrorCells,
+            };
+        }
+        finally { ReleaseCom((object?)worksheet); }
+    }
+
+    private static Dictionary<string, object?> CreateAutofitImpact(
+        dynamic range,
+        int rowCount,
+        int columnCount,
+        bool columns,
+        bool rows)
+    {
+        dynamic? worksheet = null;
+        try
+        {
+            worksheet = range.Worksheet;
+            return new Dictionary<string, object?>
+            {
+                ["target"] = $"{worksheet.Name}!{RangeAddress(range)}",
+                ["rowCount"] = rowCount,
+                ["columnCount"] = columnCount,
+                ["columns"] = columns ? columnCount : 0,
+                ["rows"] = rows ? rowCount : 0,
+                ["dimensionCount"] = (columns ? columnCount : 0) + (rows ? rowCount : 0),
+            };
+        }
+        finally { ReleaseCom((object?)worksheet); }
+    }
+
+    private static Dictionary<string, object?> CreateAutofitVerification(
+        dynamic? entireColumns,
+        dynamic? entireRows,
+        bool columns,
+        bool rows)
+    {
+        var verification = new Dictionary<string, object?>
+        {
+            ["kind"] = "autofit",
+            ["matches"] = true,
+            ["columns"] = columns,
+            ["rows"] = rows,
+        };
+        if (columns)
+        {
+            if (entireColumns is null) throw new InvalidOperationException("自动调整列宽后无法读取列宽。");
+            verification["columnWidth"] = NormalizeComValue(entireColumns.ColumnWidth);
+        }
+        if (rows)
+        {
+            if (entireRows is null) throw new InvalidOperationException("自动调整行高后无法读取行高。");
+            verification["rowHeight"] = NormalizeComValue(entireRows.RowHeight);
+        }
+        return verification;
+    }
+
+    private static Dictionary<string, object?> VerifyRangeFormat(dynamic range, JsonElement arguments)
+    {
+        dynamic? interior = null;
+        dynamic? font = null;
+        try
+        {
+            var properties = new Dictionary<string, object?>();
+            var matches = true;
+
+            if (OptionalString(arguments, "fillColor") is { } fillColor)
+            {
+                interior = range.Interior;
+                var actual = Convert.ToInt32(interior.Color);
+                properties["fillColor"] = OleColorToHtml(actual);
+                matches &= actual == ColorTranslator.ToOle(ColorTranslator.FromHtml(fillColor));
+            }
+            if (OptionalString(arguments, "fontColor") is { } fontColor)
+            {
+                font ??= range.Font;
+                var actual = Convert.ToInt32(font.Color);
+                properties["fontColor"] = OleColorToHtml(actual);
+                matches &= actual == ColorTranslator.ToOle(ColorTranslator.FromHtml(fontColor));
+            }
+            if (OptionalBoolean(arguments, "bold") is { } bold)
+            {
+                font ??= range.Font;
+                var actual = Convert.ToBoolean(font.Bold);
+                properties["bold"] = actual;
+                matches &= actual == bold;
+            }
+            if (OptionalBoolean(arguments, "italic") is { } italic)
+            {
+                font ??= range.Font;
+                var actual = Convert.ToBoolean(font.Italic);
+                properties["italic"] = actual;
+                matches &= actual == italic;
+            }
+            if (OptionalDouble(arguments, "fontSize") is { } fontSize)
+            {
+                font ??= range.Font;
+                var actual = Convert.ToDouble(font.Size);
+                properties["fontSize"] = actual;
+                matches &= actual.Equals(fontSize);
+            }
+            if (OptionalString(arguments, "horizontalAlignment") is { } horizontal)
+            {
+                var actual = Convert.ToInt32(range.HorizontalAlignment);
+                properties["horizontalAlignment"] = actual;
+                matches &= actual == HorizontalAlignment(horizontal);
+            }
+            if (OptionalString(arguments, "verticalAlignment") is { } vertical)
+            {
+                var actual = Convert.ToInt32(range.VerticalAlignment);
+                properties["verticalAlignment"] = actual;
+                matches &= actual == VerticalAlignment(vertical);
+            }
+            if (OptionalBoolean(arguments, "wrapText") is { } wrapText)
+            {
+                var actual = Convert.ToBoolean(range.WrapText);
+                properties["wrapText"] = actual;
+                matches &= actual == wrapText;
+            }
+
+            AssertVerification(matches, "FORMAT_VERIFICATION_FAILED", "Excel 未能确认范围格式已按请求应用。");
+            return new Dictionary<string, object?>
+            {
+                ["kind"] = "format",
+                ["matches"] = true,
+                ["properties"] = properties,
+            };
+        }
+        finally
+        {
+            ReleaseCom((object?)font);
+            ReleaseCom((object?)interior);
+        }
+    }
+
+    private static string OleColorToHtml(int value)
+    {
+        var color = ColorTranslator.FromOle(value);
+        return $"#{color.R:X2}{color.G:X2}{color.B:X2}";
+    }
+
+    private static RangeContents ReadRangeContents(dynamic range, int rowCount, int columnCount)
+    {
+        var values = ToRows(range.Value2, rowCount, columnCount);
+        var formulas = ToRows(range.Formula, rowCount, columnCount);
+        var nonEmptyCells = 0;
+        var formulaCells = 0;
+        var formulaErrorCells = 0;
+        for (var row = 0; row < rowCount; row += 1)
+        {
+            for (var column = 0; column < columnCount; column += 1)
+            {
+                var value = values[row][column];
+                var formula = formulas[row][column];
+                if (value is not null && value is not "") nonEmptyCells += 1;
+                var isFormula = formula is string text && text.StartsWith("=", StringComparison.Ordinal);
+                if (isFormula) formulaCells += 1;
+                if (isFormula && IsFormulaErrorValue(value)) formulaErrorCells += 1;
+            }
+        }
+        return new RangeContents(values, formulas, nonEmptyCells, formulaCells, formulaErrorCells);
+    }
+
+    private static bool IsFormulaErrorValue(object? value) => value switch
+    {
+        string text => FormulaErrorValues.Contains(text) ||
+            (text.StartsWith("#ERROR(", StringComparison.OrdinalIgnoreCase) && text.EndsWith(")", StringComparison.Ordinal)),
+        int code when code < 0 => FormulaErrorCodes.Contains(unchecked((ushort)code)),
+        long code when code < 0 => FormulaErrorCodes.Contains(unchecked((ushort)code)),
+        double code when code < 0 && code == Math.Truncate(code) => FormulaErrorCodes.Contains(unchecked((ushort)code)),
+        _ => false,
+    };
+
+    private static bool MatrixMatches(object?[][] actual, object?[,] expected, int rowCount, int columnCount)
+    {
+        if (actual.Length != rowCount) return false;
+        for (var row = 0; row < rowCount; row += 1)
+        {
+            if (actual[row].Length != columnCount) return false;
+            for (var column = 0; column < columnCount; column += 1)
+            {
+                if (!ScalarValuesMatch(actual[row][column], expected[row, column])) return false;
+            }
+        }
+        return true;
+    }
+
+    private static bool MatricesEqual(object?[][] left, object?[][] right)
+    {
+        if (left.Length != right.Length) return false;
+        for (var row = 0; row < left.Length; row += 1)
+        {
+            if (left[row].Length != right[row].Length) return false;
+            for (var column = 0; column < left[row].Length; column += 1)
+            {
+                if (!ScalarValuesMatch(left[row][column], right[row][column])) return false;
+            }
+        }
+        return true;
+    }
+
+    private static bool MatrixIsBlank(object?[][] matrix)
+    {
+        foreach (var row in matrix)
+        {
+            foreach (var value in row)
+            {
+                if (value is not null && value is not "") return false;
+            }
+        }
+        return true;
+    }
+
+    private static bool ScalarValuesMatch(object? actual, object? expected)
+    {
+        actual = NormalizeComValue(actual);
+        expected = NormalizeComValue(expected);
+        if (actual is null || expected is null) return actual is null && expected is null;
+        if (IsNumericValue(actual) && IsNumericValue(expected)) return Convert.ToDouble(actual) == Convert.ToDouble(expected);
+        return Equals(actual, expected);
+    }
+
+    private static bool IsNumericValue(object value) => value is
+        byte or sbyte or short or ushort or int or uint or long or ulong or float or double or decimal;
+
+    private static bool NumberFormatsMatch(object?[][] numberFormats, string formatCode, int rowCount, int columnCount)
+    {
+        if (numberFormats.Length != rowCount) return false;
+        for (var row = 0; row < rowCount; row += 1)
+        {
+            if (numberFormats[row].Length != columnCount) return false;
+            for (var column = 0; column < columnCount; column += 1)
+            {
+                if (!string.Equals(Convert.ToString(numberFormats[row][column]), formatCode, StringComparison.Ordinal)) return false;
+            }
+        }
+        return true;
+    }
+
+    private static TableRollbackSnapshot CaptureTableRollback(object rangeObject, MutationInspection inspection)
+    {
+        dynamic range = rangeObject;
+        return new(
+            inspection.Contents.Values,
+            inspection.Contents.Formulas,
+            ReadNumberFormatRows(range, inspection.RowCount, inspection.ColumnCount));
+    }
+
+    private static void RestoreTableRollback(object rangeObject, TableRollbackSnapshot snapshot)
+    {
+        dynamic range = rangeObject;
+        var rowCount = snapshot.Values.Length;
+        var columnCount = rowCount == 0 ? 0 : snapshot.Values[0].Length;
+        var contents = new object?[rowCount, columnCount];
+        var numberFormats = new object?[rowCount, columnCount];
+        for (var row = 0; row < rowCount; row += 1)
+        {
+            for (var column = 0; column < columnCount; column += 1)
+            {
+                var formula = snapshot.Formulas[row][column];
+                contents[row, column] = formula is string text && text.StartsWith("=", StringComparison.Ordinal)
+                    ? text
+                    : snapshot.Values[row][column];
+                numberFormats[row, column] = snapshot.NumberFormats[row][column];
+            }
+        }
+        range.Formula = contents;
+        range.NumberFormat = numberFormats;
+    }
+
+    private static object?[] SampleColumn(object?[][] values, int column)
+    {
+        var count = Math.Min(values.Length, 20);
+        var sample = new object?[count];
+        for (var row = 0; row < count; row += 1) sample[row] = values[row][column];
+        return sample;
+    }
+
+    private static void AssertVerification(bool matches, string code, string message)
+    {
+        if (!matches) throw new LegacyWorkbookException(code, message);
+    }
+
+    private object RangeResult(
+        dynamic range,
+        object? details = null,
+        Dictionary<string, object?>? impact = null,
+        Dictionary<string, object?>? verification = null)
     {
         dynamic worksheet = range.Worksheet;
         try
@@ -702,10 +1336,36 @@ internal sealed class LegacyWorkbookHost : Form
             {
                 foreach (var property in details.GetType().GetProperties()) result[property.Name] = property.GetValue(details);
             }
+            if (impact is not null)
+            {
+                result["impact"] = impact;
+                if (!result.ContainsKey("rowCount")) result["rowCount"] = impact["rowCount"];
+                if (!result.ContainsKey("columnCount")) result["columnCount"] = impact["columnCount"];
+            }
+            if (verification is not null) result["verification"] = verification;
             return result;
         }
-        finally { ReleaseCom(worksheet); }
+        finally { ReleaseCom((object?)worksheet); }
     }
+
+    private sealed record RangeContents(
+        object?[][] Values,
+        object?[][] Formulas,
+        int NonEmptyCells,
+        int FormulaCells,
+        int FormulaErrorCells);
+
+    private sealed record TableRollbackSnapshot(
+        object?[][] Values,
+        object?[][] Formulas,
+        object?[][] NumberFormats);
+
+    private sealed record MutationInspection(
+        int RowCount,
+        int ColumnCount,
+        long CellCount,
+        Dictionary<string, object?> Impact,
+        RangeContents Contents);
 
     private static object?[][] ToRows(object? value, int rows, int columns)
     {
@@ -722,6 +1382,37 @@ internal sealed class LegacyWorkbookHost : Form
             }
         }
         return output;
+    }
+
+    private static object?[][] ReadNumberFormatRows(dynamic range, int rows, int columns)
+    {
+        object? numberFormat = range.NumberFormat;
+        if (numberFormat is not null && numberFormat is not DBNull) return ToRows(numberFormat, rows, columns);
+
+        var output = new object?[rows][];
+        dynamic? cells = null;
+        dynamic? cell = null;
+        try
+        {
+            cells = range.Cells;
+            for (var row = 0; row < rows; row += 1)
+            {
+                output[row] = new object?[columns];
+                for (var column = 0; column < columns; column += 1)
+                {
+                    cell = cells[row + 1, column + 1];
+                    output[row][column] = NormalizeComValue(cell.NumberFormat);
+                    ReleaseCom((object?)cell);
+                    cell = null;
+                }
+            }
+            return output;
+        }
+        finally
+        {
+            ReleaseCom((object?)cell);
+            ReleaseCom((object?)cells);
+        }
     }
 
     private static object? NormalizeComValue(object? value) => value switch
@@ -855,32 +1546,78 @@ internal sealed class LegacyWorkbookHost : Form
 
     private void OnSheetChange(object sheet, object target)
     {
-        if (!suppressEvents) revision += 1;
+        if (IsBoundWorkbook(sheet) && !suppressEvents) revision += 1;
     }
 
     private void OnSheetActivate(object sheet)
     {
-        activeSheetRevision += 1;
+        if (IsBoundWorkbook(sheet)) activeSheetRevision += 1;
     }
 
     private void OnWorkbookBeforeClose(object closingWorkbook, ref bool cancel)
     {
-        dynamic closing = closingWorkbook;
+        if (cancel || !IsBoundWorkbook(closingWorkbook)) return;
+        workbookClosePending = true;
+        QueueWorkbookCloseConfirmation();
+    }
+
+    private void QueueWorkbookCloseConfirmation()
+    {
+        if (!IsHandleCreated || IsDisposed) return;
+        try { BeginInvoke((MethodInvoker)ConfirmPendingWorkbookClose); }
+        catch (ObjectDisposedException) { }
+        catch (InvalidOperationException) { }
+    }
+
+    private void ConfirmPendingWorkbookClose()
+    {
+        if (!workbookClosePending || released || IsBoundWorkbookOpen()) return;
+        workbookClosePending = false;
+        workbookClosed = true;
+        if (!IsDisposed) Close();
+    }
+
+    private bool IsBoundWorkbookOpen()
+    {
+        if (excel is null || workbook is null) return false;
+
+        dynamic? workbooks = null;
         try
         {
-            if (workbook is null || !string.Equals((string)closing.FullName, (string)workbook.FullName, StringComparison.OrdinalIgnoreCase)) return;
-            workbookClosed = true;
-            if (IsHandleCreated) BeginInvoke(Close);
+            workbooks = excel.Workbooks;
+            var count = Convert.ToInt32(workbooks.Count);
+            for (var index = 1; index <= count; index += 1)
+            {
+                dynamic? candidate = null;
+                var candidateIsBoundWorkbook = false;
+                try
+                {
+                    candidate = workbooks[index];
+                    candidateIsBoundWorkbook = IsSameComObject(candidate, (object)workbook);
+                    if (candidateIsBoundWorkbook) return true;
+                }
+                finally
+                {
+                    if (!candidateIsBoundWorkbook) ReleaseCom((object?)candidate);
+                }
+            }
+            return false;
         }
-        catch (COMException)
+        catch (Exception error) when (error is COMException or RuntimeBinderException or InvalidComObjectException)
         {
-            workbookClosed = true;
-            if (IsHandleCreated) BeginInvoke(Close);
+            // Excel can reject COM calls while showing its own save dialog. Keep the pane alive until a later check succeeds.
+            return true;
+        }
+        finally
+        {
+            ReleaseCom((object?)workbooks);
         }
     }
 
     private void TrackExcelWindow()
     {
+        ConfirmPendingWorkbookClose();
+        if (workbookClosed || IsDisposed) return;
         if (excelWindow == IntPtr.Zero || !NativeMethods.IsWindow(excelWindow))
         {
             workbookClosed = true;
@@ -915,8 +1652,8 @@ internal sealed class LegacyWorkbookHost : Form
             RemoveComEvent(SheetActivateDispId, sheetActivateHandler);
             RemoveComEvent(WorkbookBeforeCloseDispId, workbookBeforeCloseHandler);
         }
-        ReleaseCom(workbook);
-        ReleaseCom(excel);
+        ReleaseCom((object?)workbook);
+        ReleaseCom((object?)excel);
         workbook = null;
         excel = null;
         GC.Collect();
@@ -925,16 +1662,76 @@ internal sealed class LegacyWorkbookHost : Form
 
     private static void ReleaseCom(object? value)
     {
-        if (value is not null && Marshal.IsComObject(value))
+        try
         {
-            try { Marshal.FinalReleaseComObject(value); } catch { }
+            if (value is not null && Marshal.IsComObject(value)) Marshal.FinalReleaseComObject(value);
         }
+        catch { }
+    }
+
+    private static void ReleaseComReference(object? value)
+    {
+        try
+        {
+            if (value is not null && Marshal.IsComObject(value)) Marshal.ReleaseComObject(value);
+        }
+        catch { }
     }
 
     private void RemoveComEvent(int dispId, Delegate? handler)
     {
         if (excel is null || handler is null) return;
         try { ComEventsHelper.Remove(excel, AppEventsIid, dispId, handler); } catch { }
+    }
+
+    private bool IsBoundWorkbook(object? source)
+    {
+        if (workbook is null || source is null) return false;
+        if (IsSameComObject(source, (object)workbook)) return true;
+
+        try
+        {
+            dynamic candidate = source;
+            object? parent = candidate.Parent;
+            // Excel may return an RCW already owned by the event source or another open
+            // workbook. Releasing that borrowed wrapper can detach the live caller RCW.
+            return IsSameComObject(parent, (object)workbook);
+        }
+        catch (Exception error) when (error is COMException or RuntimeBinderException or InvalidComObjectException)
+        {
+            return false;
+        }
+    }
+
+    private void ReleaseComIfNotBoundWorkbook(object? value)
+    {
+        if (workbook is not null && IsSameComObject(value, (object)workbook)) return;
+        ReleaseCom((object?)value);
+    }
+
+    private static bool IsSameComObject(object? left, object? right)
+    {
+        if (left is null || right is null) return false;
+        if (ReferenceEquals(left, right)) return true;
+        if (!Marshal.IsComObject(left) || !Marshal.IsComObject(right)) return false;
+
+        var leftUnknown = IntPtr.Zero;
+        var rightUnknown = IntPtr.Zero;
+        try
+        {
+            leftUnknown = Marshal.GetIUnknownForObject(left);
+            rightUnknown = Marshal.GetIUnknownForObject(right);
+            return leftUnknown == rightUnknown;
+        }
+        catch (Exception error) when (error is ArgumentException or InvalidComObjectException)
+        {
+            return false;
+        }
+        finally
+        {
+            if (rightUnknown != IntPtr.Zero) Marshal.Release(rightUnknown);
+            if (leftUnknown != IntPtr.Zero) Marshal.Release(leftUnknown);
+        }
     }
 
     private static bool IsExcelRange(object? value)
@@ -968,7 +1765,7 @@ internal sealed class LegacyWorkbookHost : Form
         }
         finally
         {
-            ReleaseCom(cells);
+            ReleaseCom((object?)cells);
         }
     }
 
@@ -984,18 +1781,20 @@ internal sealed class LegacyWorkbookHost : Form
         try
         {
             var formatBefore = (int)host.workbook!.FileFormat;
-            var write = host.HandlePipeRequest(ParseRequest(
-                """{"action":"execute","name":"write_values","arguments":{"worksheet":null,"address":"B2","values":[["native-xls-ok"]]}}"""));
-            var format = host.HandlePipeRequest(ParseRequest(
-                """{"action":"execute","name":"format_range","arguments":{"worksheet":null,"address":"B2","fillColor":"#DFF6E8","fontColor":"#107C41","bold":true,"italic":false,"fontSize":11,"horizontalAlignment":"Center","verticalAlignment":"Center","wrapText":false}}"""));
-            var read = host.HandlePipeRequest(ParseRequest(
-                """{"action":"execute","name":"read_range","arguments":{"worksheet":null,"address":"A1:B2"}}"""));
-            host.workbook.Save();
+            var write = ExecuteSmokeTool(host, "write_values", """{"worksheet":null,"address":"B2","values":[["native-xls-ok"]]}""");
+            var format = ExecuteSmokeTool(host, "format_range", """{"worksheet":null,"address":"B2","fillColor":"#DFF6E8","fontColor":"#107C41","bold":true,"italic":false,"fontSize":11,"horizontalAlignment":"Center","verticalAlignment":"Center","wrapText":false}""");
+            var read = ExecuteSmokeTool(host, "read_range", """{"worksheet":null,"address":"A1:B2"}""");
+            var crossWorkbook = VerifyCrossWorkbookIsolation(host);
+            var numberFormatSafety = VerifyNumberFormatSafety(host);
+            var operationPolicy = VerifyOperationPolicy(host);
+            var tableRollback = VerifyTableRollback(host);
+            var cancelledClose = VerifyCancelledCloseKeepsHostUsable(host);
+            var displayAlerts = host.excel!.DisplayAlerts;
+            host.excel.DisplayAlerts = false;
+            try { host.workbook.Save(); }
+            finally { host.excel.DisplayAlerts = displayAlerts; }
             var formatAfter = (int)host.workbook.FileFormat;
             var fullName = host.workbook.FullName;
-            host.workbook.Close(SaveChanges: false);
-            host.workbookClosed = true;
-            host.excel!.Quit();
             return JsonSerializer.Serialize(new
             {
                 ok = true,
@@ -1005,12 +1804,429 @@ internal sealed class LegacyWorkbookHost : Form
                 write,
                 format,
                 read,
+                crossWorkbook,
+                numberFormatSafety,
+                operationPolicy,
+                tableRollback,
+                cancelledClose,
             }, LegacyProtocol.JsonOptions);
         }
         finally
         {
+            CloseSmokeExcel(host);
             host.ReleaseHost();
         }
+    }
+
+    private static object ExecuteSmokeTool(LegacyWorkbookHost host, string name, string argumentsJson)
+    {
+        using var arguments = JsonDocument.Parse(argumentsJson);
+        var request = JsonSerializer.Serialize(new
+        {
+            action = "execute",
+            name,
+            arguments = arguments.RootElement,
+        }, LegacyProtocol.JsonOptions);
+        return host.HandlePipeRequest(ParseRequest(request));
+    }
+
+    private static object VerifyCrossWorkbookIsolation(LegacyWorkbookHost host)
+    {
+        dynamic? boundWorksheet = null;
+        dynamic? boundCell = null;
+        dynamic? otherWorkbook = null;
+        dynamic? otherWorksheet = null;
+        dynamic? otherCell = null;
+        try
+        {
+            host.workbook!.Activate();
+            boundWorksheet = host.GetActiveWorksheet();
+            var boundSheetName = (string)boundWorksheet.Name;
+            boundCell = boundWorksheet.Range["B2"];
+            boundCell.Select();
+
+            otherWorkbook = host.excel!.Workbooks.Add();
+            otherWorksheet = otherWorkbook.Worksheets[1];
+            otherWorkbook.Activate();
+            otherCell = otherWorksheet.Range["C3"];
+            otherCell.Select();
+            otherCell.Value2 = "other-workbook-change";
+
+            var revisionBeforeExplicitOtherWorkbookEvent = host.revision;
+            host.OnSheetChange((object)otherWorksheet, (object)otherCell);
+            var otherWorkbookChangeIgnored = host.revision == revisionBeforeExplicitOtherWorkbookEvent;
+
+            var activeSheetRevisionBeforeExplicitOtherWorkbookEvent = host.activeSheetRevision;
+            host.OnSheetActivate((object)otherWorksheet);
+            var otherWorkbookActivationIgnored = host.activeSheetRevision == activeSheetRevisionBeforeExplicitOtherWorkbookEvent;
+
+            var selection = ExecuteSmokeTool(host, "get_selection", "{}");
+            using var selectionDocument = JsonDocument.Parse(JsonSerializer.Serialize(selection, LegacyProtocol.JsonOptions));
+            var selectionTarget = selectionDocument.RootElement.GetProperty("target").GetString() ?? string.Empty;
+            var boundSelectionReturned = selectionTarget.StartsWith($"{boundSheetName}!", StringComparison.OrdinalIgnoreCase) &&
+                selectionTarget.EndsWith("B2", StringComparison.OrdinalIgnoreCase);
+
+            var undoRejected = false;
+            try
+            {
+                host.HandlePipeRequest(ParseRequest("""{"action":"undo"}"""));
+            }
+            catch (LegacyWorkbookException error) when (error.Code == "UNDO_UNAVAILABLE")
+            {
+                undoRejected = true;
+            }
+
+            var otherWorkbookValuePreserved = string.Equals(
+                Convert.ToString(otherCell.Value2),
+                "other-workbook-change",
+                StringComparison.Ordinal);
+            if (!boundSelectionReturned || !otherWorkbookChangeIgnored || !otherWorkbookActivationIgnored || !undoRejected || !otherWorkbookValuePreserved)
+            {
+                throw new InvalidOperationException("跨工作簿隔离 smoke 检查失败。");
+            }
+
+            return new
+            {
+                ok = true,
+                selectionTarget,
+                otherWorkbookChangeIgnored,
+                otherWorkbookActivationIgnored,
+                undoRejected,
+                otherWorkbookValuePreserved,
+            };
+        }
+        finally
+        {
+            try { if (otherWorkbook is not null) otherWorkbook.Close(SaveChanges: false); } catch { }
+            ReleaseCom((object?)otherCell);
+            ReleaseCom((object?)otherWorksheet);
+            ReleaseCom((object?)otherWorkbook);
+            ReleaseCom((object?)boundCell);
+            ReleaseCom((object?)boundWorksheet);
+            try { if (host.workbook is not null) host.workbook.Activate(); } catch { }
+        }
+    }
+
+    private static object VerifyNumberFormatSafety(LegacyWorkbookHost host)
+    {
+        ExecuteSmokeTool(host, "write_values", """{"worksheet":null,"address":"D2:E2","values":[[1,2]]}""");
+        var decimalFormat = ExecuteSmokeTool(host, "set_number_format", """{"worksheet":null,"address":"D2","formatCode":"0.00"}""");
+        var percentFormat = ExecuteSmokeTool(host, "set_number_format", """{"worksheet":null,"address":"E2","formatCode":"0%"}""");
+        var read = ExecuteSmokeTool(host, "read_range", """{"worksheet":null,"address":"D2:E2"}""");
+        using var readDocument = JsonDocument.Parse(JsonSerializer.Serialize(read, LegacyProtocol.JsonOptions));
+        var numberFormats = readDocument.RootElement.GetProperty("numberFormat");
+        var mixedFormatsPreserved = numberFormats.ValueKind == JsonValueKind.Array &&
+            numberFormats.GetArrayLength() == 1 &&
+            numberFormats[0].ValueKind == JsonValueKind.Array &&
+            numberFormats[0].GetArrayLength() == 2 &&
+            numberFormats[0][0].ValueKind == JsonValueKind.String &&
+            numberFormats[0][1].ValueKind == JsonValueKind.String &&
+            !string.Equals(numberFormats[0][0].GetString(), numberFormats[0][1].GetString(), StringComparison.Ordinal);
+
+        var oversizedRangeRejected = false;
+        try
+        {
+            ExecuteSmokeTool(host, "set_number_format", """{"worksheet":null,"address":"A1:A5001","formatCode":"0.00"}""");
+        }
+        catch (LegacyWorkbookException error) when (error.Code == "NUMBER_FORMAT_RANGE_TOO_LARGE")
+        {
+            oversizedRangeRejected = true;
+        }
+
+        var verificationReturned = HasVerifiedRangeResult(decimalFormat, "numberFormat", 1) &&
+            HasVerifiedRangeResult(percentFormat, "numberFormat", 1);
+        if (!mixedFormatsPreserved || !oversizedRangeRejected || !verificationReturned)
+        {
+            throw new InvalidOperationException("数字格式 smoke 检查失败。");
+        }
+
+        return new { ok = true, mixedFormatsPreserved, oversizedRangeRejected, verificationReturned };
+    }
+
+    private static object VerifyOperationPolicy(LegacyWorkbookHost host)
+    {
+        var values = ExecuteSmokeTool(host, "write_values", """{"worksheet":null,"address":"M2:N3","values":[[1,2],[3,4]]}""");
+        var formulas = ExecuteSmokeTool(host, "write_formulas", """{"worksheet":null,"address":"O2:O3","formulas":[["=1/0"],["=2+2"]]}""");
+        var format = ExecuteSmokeTool(host, "format_range", """{"worksheet":null,"address":"P2","fillColor":"#DFF6E8","bold":true}""");
+        ExecuteSmokeTool(host, "write_values", """{"worksheet":null,"address":"Q2:R2","values":[[1,2]]}""");
+        var clear = ExecuteSmokeTool(host, "clear_range", """{"worksheet":null,"address":"Q2:R2","applyTo":"Contents"}""");
+        var autofit = ExecuteSmokeTool(host, "autofit_range", """{"worksheet":null,"address":"N:R","columns":true,"rows":false}""");
+
+        var tableName = $"ChatExcelPolicy{Guid.NewGuid():N}";
+        var chartName = string.Empty;
+        try
+        {
+            ExecuteSmokeTool(host, "write_values", """{"worksheet":null,"address":"S2:T3","values":[[1,2],[3,4]]}""");
+            var table = ExecuteSmokeTool(host, "create_table", JsonSerializer.Serialize(new
+            {
+                worksheet = (string?)null,
+                address = "S2:T3",
+                hasHeaders = false,
+                name = tableName,
+                style = (string?)null,
+            }, LegacyProtocol.JsonOptions));
+
+            ExecuteSmokeTool(host, "write_values", """{"worksheet":null,"address":"U2:V3","values":[["项目","数值"],["A",1]]}""");
+            var chart = ExecuteSmokeTool(host, "create_chart", """{"worksheet":null,"sourceAddress":"U2:V3","chartType":"ColumnClustered","seriesBy":"Auto","title":"策略 smoke"}""");
+            chartName = ReadResultString(chart, "chart");
+
+            var writeVerified = HasVerifiedRangeResult(values, "values", 4);
+            var formulaVerified = HasVerifiedRangeResult(formulas, "formulas", 2) && ReadVerificationInt32(formulas, "formulaErrorCells") == 1;
+            var formatVerified = HasVerifiedRangeResult(format, "format", 1);
+            var clearVerified = HasVerifiedRangeResult(clear, "clear", 2);
+            var tableVerified = HasVerifiedRangeResult(table, "table", 4);
+            var chartVerified = HasVerifiedRangeResult(chart, "chart", 4);
+            var autofitVerified = HasVerifiedAutofitResult(autofit, 5);
+            var oversizedMutationRejected =
+                IsRejectedWithCode(() => ExecuteSmokeTool(host, "write_values", """{"worksheet":null,"address":"A1:A5001","values":[[1]]}"""), "MODIFY_RANGE_TOO_LARGE") &&
+                IsRejectedWithCode(() => ExecuteSmokeTool(host, "format_range", """{"worksheet":null,"address":"A1:A5001","bold":true}"""), "MODIFY_RANGE_TOO_LARGE") &&
+                IsRejectedWithCode(() => ExecuteSmokeTool(host, "clear_range", """{"worksheet":null,"address":"A1:A5001","applyTo":"Contents"}"""), "MODIFY_RANGE_TOO_LARGE") &&
+                IsRejectedWithCode(() => ExecuteSmokeTool(host, "sort_range", """{"worksheet":null,"address":"A1:A5001","keyColumn":1,"direction":"Ascending","hasHeaders":false}"""), "MODIFY_RANGE_TOO_LARGE") &&
+                IsRejectedWithCode(() => ExecuteSmokeTool(host, "create_table", """{"worksheet":null,"address":"A1:A5001","hasHeaders":false,"name":null,"style":null}"""), "MODIFY_RANGE_TOO_LARGE") &&
+                IsRejectedWithCode(() => ExecuteSmokeTool(host, "create_chart", """{"worksheet":null,"sourceAddress":"A1:A5001","chartType":"Line","seriesBy":"Auto","title":null,"positionAddress":null}"""), "MODIFY_RANGE_TOO_LARGE");
+            var oversizedAutofitRejected = IsRejectedWithCode(
+                () => ExecuteSmokeTool(host, "autofit_range", """{"worksheet":null,"address":"1:5001","columns":false,"rows":true}"""),
+                "AUTOFIT_TARGET_TOO_LARGE");
+
+            if (!writeVerified || !formulaVerified || !formatVerified || !clearVerified || !tableVerified || !chartVerified ||
+                !autofitVerified || !oversizedMutationRejected || !oversizedAutofitRejected)
+            {
+                var failedChecks = new[]
+                {
+                    (Name: "write", Passed: writeVerified),
+                    (Name: "formulas", Passed: formulaVerified),
+                    (Name: "format", Passed: formatVerified),
+                    (Name: "clear", Passed: clearVerified),
+                    (Name: "table", Passed: tableVerified),
+                    (Name: "chart", Passed: chartVerified),
+                    (Name: "autofit", Passed: autofitVerified),
+                    (Name: "oversized-mutation", Passed: oversizedMutationRejected),
+                    (Name: "oversized-autofit", Passed: oversizedAutofitRejected),
+                }
+                    .Where(check => !check.Passed)
+                    .Select(check => check.Name);
+                throw new InvalidOperationException($"工作簿操作策略 smoke 检查失败：{string.Join("、", failedChecks)}。");
+            }
+
+            return new
+            {
+                ok = true,
+                writeVerified,
+                formulaVerified,
+                formatVerified,
+                clearVerified,
+                tableVerified,
+                chartVerified,
+                autofitVerified,
+                oversizedMutationRejected,
+                oversizedAutofitRejected,
+            };
+        }
+        finally
+        {
+            DeleteSmokeChart(host, chartName);
+            UnlistSmokeTable(host, tableName);
+        }
+    }
+
+    private static bool HasVerifiedRangeResult(object result, string kind, int cellCount)
+    {
+        using var document = JsonDocument.Parse(JsonSerializer.Serialize(result, LegacyProtocol.JsonOptions));
+        var root = document.RootElement;
+        return root.TryGetProperty("ok", out var ok) && ok.ValueKind == JsonValueKind.True &&
+            root.TryGetProperty("impact", out var impact) && impact.TryGetProperty("cellCount", out var actualCellCount) &&
+            actualCellCount.TryGetInt32(out var value) && value == cellCount &&
+            root.TryGetProperty("verification", out var verification) &&
+            verification.TryGetProperty("kind", out var actualKind) && string.Equals(actualKind.GetString(), kind, StringComparison.Ordinal) &&
+            verification.TryGetProperty("matches", out var matches) && matches.ValueKind == JsonValueKind.True;
+    }
+
+    private static bool HasVerifiedAutofitResult(object result, int dimensionCount)
+    {
+        using var document = JsonDocument.Parse(JsonSerializer.Serialize(result, LegacyProtocol.JsonOptions));
+        var root = document.RootElement;
+        return root.TryGetProperty("ok", out var ok) && ok.ValueKind == JsonValueKind.True &&
+            root.TryGetProperty("impact", out var impact) && impact.TryGetProperty("dimensionCount", out var actualDimensionCount) &&
+            actualDimensionCount.TryGetInt32(out var value) && value == dimensionCount &&
+            root.TryGetProperty("verification", out var verification) &&
+            verification.TryGetProperty("kind", out var kind) && string.Equals(kind.GetString(), "autofit", StringComparison.Ordinal) &&
+            verification.TryGetProperty("matches", out var matches) && matches.ValueKind == JsonValueKind.True;
+    }
+
+    private static int ReadVerificationInt32(object result, string property)
+    {
+        using var document = JsonDocument.Parse(JsonSerializer.Serialize(result, LegacyProtocol.JsonOptions));
+        return document.RootElement.GetProperty("verification").GetProperty(property).GetInt32();
+    }
+
+    private static string ReadResultString(object result, string property)
+    {
+        using var document = JsonDocument.Parse(JsonSerializer.Serialize(result, LegacyProtocol.JsonOptions));
+        return document.RootElement.GetProperty(property).GetString() ?? string.Empty;
+    }
+
+    private static bool IsRejectedWithCode(Func<object> execute, string code)
+    {
+        try
+        {
+            execute();
+            return false;
+        }
+        catch (LegacyWorkbookException error) when (error.Code == code)
+        {
+            return true;
+        }
+    }
+
+    private static void DeleteSmokeChart(LegacyWorkbookHost host, string chartName)
+    {
+        if (chartName.Length == 0) return;
+        dynamic? worksheet = null;
+        dynamic? chartObjects = null;
+        dynamic? chartObject = null;
+        try
+        {
+            worksheet = host.GetActiveWorksheet();
+            chartObjects = worksheet.ChartObjects();
+            chartObject = chartObjects[chartName];
+            chartObject.Delete();
+        }
+        catch (Exception error) when (error is COMException or RuntimeBinderException)
+        {
+            // The chart may not have been created if a preceding smoke assertion failed.
+        }
+        finally
+        {
+            ReleaseCom((object?)chartObject);
+            ReleaseCom((object?)chartObjects);
+            ReleaseCom((object?)worksheet);
+        }
+    }
+
+    private static object VerifyTableRollback(LegacyWorkbookHost host)
+    {
+        const string sourceAddress = "G2:H3";
+        ExecuteSmokeTool(host, "write_values", """{"worksheet":null,"address":"G2:H3","values":[[1,2],[3,4]]}""");
+        ExecuteSmokeTool(host, "set_number_format", """{"worksheet":null,"address":"G2:H3","formatCode":"0.00"}""");
+        var sourceBefore = JsonSerializer.Serialize(
+            ExecuteSmokeTool(host, "read_range", """{"worksheet":null,"address":"G2:H3"}"""),
+            LegacyProtocol.JsonOptions);
+        var tableCountBefore = CountActiveSheetTables(host);
+        var tableName = $"ChatExcelSmoke{Guid.NewGuid():N}";
+
+        try
+        {
+            ExecuteSmokeTool(host, "write_values", """{"worksheet":null,"address":"J2:K3","values":[[5,6],[7,8]]}""");
+            ExecuteSmokeTool(host, "create_table", JsonSerializer.Serialize(new
+            {
+                worksheet = (string?)null,
+                address = "J2:K3",
+                hasHeaders = false,
+                name = tableName,
+                style = (string?)null,
+            }, LegacyProtocol.JsonOptions));
+
+            var duplicateNameRejected = false;
+            try
+            {
+                ExecuteSmokeTool(host, "create_table", JsonSerializer.Serialize(new
+                {
+                    worksheet = (string?)null,
+                    address = sourceAddress,
+                    hasHeaders = false,
+                    name = tableName,
+                    style = (string?)null,
+                }, LegacyProtocol.JsonOptions));
+            }
+            catch (LegacyWorkbookException)
+            {
+                duplicateNameRejected = true;
+            }
+
+            var sourceAfter = JsonSerializer.Serialize(
+                ExecuteSmokeTool(host, "read_range", """{"worksheet":null,"address":"G2:H3"}"""),
+                LegacyProtocol.JsonOptions);
+            var sourcePreserved = string.Equals(sourceBefore, sourceAfter, StringComparison.Ordinal);
+            var failedTableRemoved = CountActiveSheetTables(host) == tableCountBefore + 1;
+            if (!duplicateNameRejected || !sourcePreserved || !failedTableRemoved)
+            {
+                throw new InvalidOperationException("表格回滚 smoke 检查失败。");
+            }
+
+            return new { ok = true, duplicateNameRejected, sourcePreserved, failedTableRemoved };
+        }
+        finally
+        {
+            UnlistSmokeTable(host, tableName);
+        }
+    }
+
+    private static int CountActiveSheetTables(LegacyWorkbookHost host)
+    {
+        dynamic? worksheet = null;
+        dynamic? listObjects = null;
+        try
+        {
+            worksheet = host.GetActiveWorksheet();
+            listObjects = worksheet.ListObjects;
+            return Convert.ToInt32(listObjects.Count);
+        }
+        finally
+        {
+            ReleaseCom((object?)listObjects);
+            ReleaseCom((object?)worksheet);
+        }
+    }
+
+    private static void UnlistSmokeTable(LegacyWorkbookHost host, string tableName)
+    {
+        dynamic? worksheet = null;
+        dynamic? listObjects = null;
+        dynamic? table = null;
+        try
+        {
+            worksheet = host.GetActiveWorksheet();
+            listObjects = worksheet.ListObjects;
+            table = listObjects[tableName];
+            table.Unlist();
+        }
+        catch (Exception error) when (error is COMException or RuntimeBinderException)
+        {
+            // The table may not have been created if a preceding smoke assertion failed.
+        }
+        finally
+        {
+            ReleaseCom((object?)table);
+            ReleaseCom((object?)listObjects);
+            ReleaseCom((object?)worksheet);
+        }
+    }
+
+    private static object VerifyCancelledCloseKeepsHostUsable(LegacyWorkbookHost host)
+    {
+        if (host.workbook is null) throw new InvalidOperationException("原生 smoke 工作簿不可用。");
+
+        var cancel = true;
+        host.OnWorkbookBeforeClose((object)host.workbook, ref cancel);
+        var state = host.HandlePipeRequest(ParseRequest("""{"action":"state"}"""));
+        using var stateDocument = JsonDocument.Parse(JsonSerializer.Serialize(state, LegacyProtocol.JsonOptions));
+        var hostStillUsable = !host.workbookClosed &&
+            stateDocument.RootElement.TryGetProperty("ok", out var ok) &&
+            ok.ValueKind == JsonValueKind.True;
+        if (!hostStillUsable)
+        {
+            throw new InvalidOperationException("取消关闭后原生宿主不可用。");
+        }
+
+        return new { ok = true, cancel, hostStillUsable };
+    }
+
+    private static void CloseSmokeExcel(LegacyWorkbookHost host)
+    {
+        host.workbookClosed = true;
+        host.workbookClosePending = false;
+        try { if (host.workbook is not null) host.workbook.Close(SaveChanges: false); } catch { }
+        try { if (host.excel is not null) host.excel.Quit(); } catch { }
     }
 
     private static JsonElement ParseRequest(string json)

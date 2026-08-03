@@ -190,6 +190,13 @@ internal static class Program
         Application.SetCompatibleTextRenderingDefault(false);
         using var host = new LegacyWorkbookHost(workbookPath, sessionId);
         Application.Run(host);
+        if (host.WebViewInitializationFailure is { } error)
+        {
+            throw new LauncherException(
+                "无法启动 ChatExcel 原生窗格。请确认已安装 Microsoft Edge WebView2 Runtime。",
+                "WebView2",
+                error.Message);
+        }
     }
 
     private static void EnsureCertificate(string appRoot, string nodePath, LauncherLog log)

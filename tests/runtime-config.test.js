@@ -370,6 +370,30 @@ test("启动连通性探测以脱敏状态归类提供方失败", async (t) => {
   }
 });
 
+test("模型发现错误统一脱敏 JSON、Basic、Bearer 和查询认证信息", async () => {
+  const secretMarkers = ["system-secret", "json-secret", "basic-secret", "bearer-secret", "query-secret"];
+  const store = new RuntimeConfigStore({
+    systemLoader: async () => systemConfig(),
+    fetchImpl: async () => new Response([
+      '{"api_key":"json-secret","authorization":"Basic basic-secret"}',
+      "Authorization: Bearer bearer-secret",
+      "https://provider.example/error?token=query-secret",
+      "system-secret",
+    ].join(" "), { status: 401 }),
+    settingsStore: memorySettingsStore(),
+  });
+
+  await assert.rejects(
+    () => store.discoverModels(),
+    (error) => {
+      assert.equal(error instanceof RuntimeConfigError, true);
+      assert.equal(error.code, "MODELS_HTTP_ERROR");
+      for (const marker of secretMarkers) assert.equal(error.message.includes(marker), false);
+      return true;
+    },
+  );
+});
+
 test("发现自定义模型后保存内存配置并校验消息级选择", async () => {
   let request;
   const store = new RuntimeConfigStore({

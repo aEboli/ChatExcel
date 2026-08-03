@@ -91,33 +91,65 @@
           ></textarea>
           <div class="composer-toolbar">
             <div class="toolbar-group primary-controls">
-              <div class="menu-anchor model-anchor">
-                <button class="toolbar-button model-button" id="model-button" type="button" aria-expanded="false">
-                  <img src="/assets/fluent/model.svg" alt="" />
-                  <span id="model-label">模型</span>
+              <div class="menu-anchor model-anchor model-settings-anchor">
+                <button class="toolbar-button settings-row-button model-button" id="model-button" type="button" aria-expanded="false" aria-haspopup="menu" aria-label="选择模型">
+                  <span class="model-settings-summary" aria-hidden="true">
+                    <span class="control-value" id="model-label">--</span>
+                    <span class="model-settings-summary-separator"></span>
+                    <span class="control-value model-settings-effort-value" id="model-effort-label">自动</span>
+                  </span>
                   <img class="chevron" src="/assets/fluent/chevron-down.svg" alt="" />
                 </button>
-                <div class="control-menu model-menu" id="model-menu" role="listbox" hidden></div>
+                <div class="control-menu model-settings-menu" id="model-settings-menu" role="menu" hidden>
+                  <div class="model-settings-panel" id="model-settings-panel">
+                    <button class="model-settings-row" id="model-settings-model-row" type="button" role="menuitem" aria-haspopup="listbox" aria-expanded="false">
+                      <span class="control-label">模型</span>
+                      <span class="control-value" id="model-menu-value">--</span>
+                      <img class="chevron chevron-forward" src="/assets/fluent/chevron-down.svg" alt="" />
+                    </button>
+                    <button class="model-settings-row effort-button" id="effort-button" type="button" role="menuitem" aria-haspopup="listbox" aria-expanded="false" aria-label="选择推理强度">
+                      <span class="effort-glyph" aria-hidden="true">
+                        <img src="/assets/fluent/brain.svg" alt="" />
+                        <span class="effort-meter"><i></i><i></i><i></i><i></i></span>
+                      </span>
+                      <span class="control-label">推理强度</span>
+                      <span class="control-value" id="effort-label">自动</span>
+                      <img class="chevron chevron-forward" src="/assets/fluent/chevron-down.svg" alt="" />
+                    </button>
+                    <div class="model-settings-divider" role="separator"></div>
+                    <button class="model-settings-reset" id="reset-model-settings" type="button" role="menuitem">
+                      <span>重置为默认设置</span>
+                      <img src="/assets/fluent/reset.svg" alt="" />
+                    </button>
+                  </div>
+                  <div class="model-settings-submenu" id="model-submenu" hidden>
+                    <button class="model-settings-back" id="model-menu-back" type="button">
+                      <img src="/assets/fluent/chevron-down.svg" alt="" />
+                      <span>模型</span>
+                    </button>
+                    <div class="control-menu model-menu" id="model-menu" role="listbox" aria-label="选择模型" hidden></div>
+                  </div>
+                  <div class="model-settings-submenu" id="effort-submenu" hidden>
+                    <button class="model-settings-back" id="effort-menu-back" type="button">
+                      <img src="/assets/fluent/chevron-down.svg" alt="" />
+                      <span>推理强度</span>
+                    </button>
+                    <div class="control-menu effort-menu" id="effort-menu" role="listbox" aria-label="选择推理强度" hidden></div>
+                  </div>
+                </div>
               </div>
-              <div class="menu-anchor effort-anchor">
-                <button class="toolbar-button effort-button" id="effort-button" type="button" aria-expanded="false">
-                  <img src="/assets/fluent/brain.svg" alt="" />
-                  <span id="effort-label">思考</span>
-                  <img class="chevron" src="/assets/fluent/chevron-down.svg" alt="" />
-                </button>
-                <div class="control-menu effort-menu" id="effort-menu" role="listbox" hidden></div>
-              </div>
-              <button class="toolbar-button context-button" id="context-button" type="button" title="上下文占用" disabled>
-                <img src="/assets/fluent/context.svg" alt="" />
-                <span id="context-label">--</span>
+              <button class="toolbar-button context-button" id="context-button" type="button" title="上下文长度尚未读取" aria-label="上下文长度尚未读取" disabled>
+                <span class="context-badge" id="context-badge" aria-hidden="true">
+                  <span id="context-label">--</span>
+                </span>
               </button>
             </div>
 
             <div class="toolbar-group action-controls">
               <div class="menu-anchor mode-anchor">
-                <button class="mode-button is-required" id="mode-button" type="button" aria-expanded="false">
+                <button class="mode-button is-required" id="mode-button" type="button" aria-expanded="false" aria-label="需要审批：每次修改由你决定">
                   <img id="mode-icon" src="/assets/fluent/approval.svg" alt="" />
-                  <span id="mode-label">需审批</span>
+                  <span class="sr-only" id="mode-label">需审批</span>
                 </button>
                 <div class="control-menu mode-menu" id="mode-menu" role="menu" hidden>
                   <button class="menu-option mode-option is-required" type="button" data-mode="required">
@@ -150,17 +182,19 @@
           aria-label="打开 ChatEx 页脚彩蛋"
           aria-pressed="false"
         >
-          <span class="easter-brand" aria-hidden="true">ChatEx</span>
-          <span class="easter-caption">local craft</span>
-          <span class="easter-spark" aria-hidden="true"></span>
         </button>
         <div class="easter-stage" aria-hidden="true">
+          <span class="easter-sun"></span>
+          <span class="easter-hills"></span>
+          <span class="easter-field"></span>
+          <span class="easter-poles"></span>
           <span class="easter-floor"></span>
-          <span class="easter-object easter-card">C</span>
-          <span class="easter-object easter-orb"></span>
-          <span class="easter-walker walker-one"></span>
-          <span class="easter-walker walker-two"></span>
-          <span class="easter-walker walker-three"></span>
+          <span class="easter-walker walker-one"><img src="/assets/easter-characters/runner-coral.webp" alt="" /></span>
+          <span class="easter-walker walker-two"><img src="/assets/easter-characters/runner-white-dress.webp" alt="" /></span>
+          <span class="easter-walker walker-three"><img src="/assets/easter-characters/runner-white-shirt.webp" alt="" /></span>
+          <span class="easter-walker walker-four"><img src="/assets/easter-characters/runner-coral-wide.webp" alt="" /></span>
+          <span class="easter-walker walker-five"><img src="/assets/easter-characters/runner-pony-close.webp" alt="" /></span>
+          <span class="easter-walker walker-six"><img src="/assets/easter-characters/runner-sunset-wide.webp" alt="" /></span>
         </div>
       </footer>
 

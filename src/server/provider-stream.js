@@ -95,11 +95,19 @@ function isProviderFailureEvent(frame, payload) {
     (payload && typeof payload === "object" && payload.error !== undefined);
 }
 
-function isValidSsePayload(protocol, payload) {
+function isValidSsePayload(protocol, frame, payload) {
   if (!payload || typeof payload !== "object" || Array.isArray(payload) || Object.keys(payload).length === 0) {
     return false;
   }
-  return protocol !== "openai-chat-completions" || Array.isArray(payload.choices);
+  if (protocol === "openai-chat-completions") return Array.isArray(payload.choices);
+  if (protocol === "anthropic-messages" && frame.event === "message_stop") {
+    return payload.type === "message_stop";
+  }
+  if (protocol === "google-gemini") {
+    const candidate = Array.isArray(payload.candidates) ? payload.candidates[0] : null;
+    return candidate !== null && typeof candidate === "object" && !Array.isArray(candidate);
+  }
+  return true;
 }
 
 function normalizeCallKey(value, fallback) {
@@ -258,6 +266,8 @@ function createAnthropicAccumulator(onEvent) {
           type: block.type ?? "text",
           text: typeof block.text === "string" ? block.text : "",
           thinking: typeof block.thinking === "string" ? block.thinking : "",
+          signature: typeof block.signature === "string" ? block.signature : null,
+          data: typeof block.data === "string" ? block.data : "",
           id: block.id ?? "",
           name: block.name ?? "",
           input: block.input && typeof block.input === "object" ? block.input : {},
@@ -269,6 +279,8 @@ function createAnthropicAccumulator(onEvent) {
           type: payload.delta?.type === "input_json_delta" ? "tool_use" : "text",
           text: "",
           thinking: "",
+          signature: null,
+          data: "",
           id: "",
           name: "",
           input: {},
@@ -281,6 +293,8 @@ function createAnthropicAccumulator(onEvent) {
         } else if (delta.type === "thinking_delta" && typeof delta.thinking === "string") {
           block.thinking += delta.thinking;
           emit(onEvent, { type: "reasoning_delta", text: delta.thinking });
+        } else if (delta.type === "signature_delta" && typeof delta.signature === "string") {
+          block.signature = delta.signature;
         } else if (delta.type === "input_json_delta" && typeof delta.partial_json === "string") {
           block.inputJson += delta.partial_json;
         }
@@ -298,12 +312,20 @@ function createAnthropicAccumulator(onEvent) {
             return { type: "tool_use", id: block.id, name: block.name, input };
           }
           if (block.type === "thinking") {
-            return { type: "thinking", thinking: block.thinking };
+            return {
+              type: "thinking",
+              thinking: block.thinking,
+              ...(block.signature !== null ? { signature: block.signature } : {}),
+            };
+          }
+          if (block.type === "redacted_thinking") {
+            return { type: "redacted_thinking", data: block.data };
           }
           return { type: "text", text: block.text };
         });
       return {
         type: "message",
+        role: "assistant",
         content,
         ...(Object.keys(usage).length > 0 ? { usage } : {}),
       };
@@ -315,13 +337,18 @@ function createGeminiAccumulator(onEvent) {
   let text = "";
   let thinking = "";
   let usageMetadata;
+  let finishReason = null;
   const calls = new Map();
   const callOrder = [];
   return {
     push(_event, payload) {
       if (!payload || typeof payload !== "object") return;
       if (payload.usageMetadata) usageMetadata = payload.usageMetadata;
-      for (const part of payload.candidates?.[0]?.content?.parts ?? []) {
+      const candidate = payload.candidates?.[0];
+      if (typeof candidate?.finishReason === "string" && candidate.finishReason !== "") {
+        finishReason = candidate.finishReason;
+      }
+      for (const part of candidate?.content?.parts ?? []) {
         if (typeof part?.text === "string") {
           if (part.thought === true) {
             thinking += part.text;
@@ -359,7 +386,10 @@ function createGeminiAccumulator(onEvent) {
         if (call?.name) parts.push({ functionCall: { id: call.id, name: call.name, args: call.args } });
       }
       return {
-        candidates: [{ content: { role: "model", parts } }],
+        candidates: [{
+          content: { role: "model", parts },
+          ...(finishReason ? { finishReason } : {}),
+        }],
         ...(usageMetadata ? { usageMetadata } : {}),
       };
     },
@@ -401,7 +431,7 @@ export async function readProviderResponse(response, { protocol, onEvent, signal
             : "模型提供方返回了流式错误。";
           throw providerStreamError("PROVIDER_STREAM_ERROR", message);
         }
-        if (!isValidSsePayload(protocol, payload)) {
+        if (!isValidSsePayload(protocol, frame, payload)) {
           throw providerStreamError("PROVIDER_STREAM_INVALID", "上游事件流响应结构无效。" );
         }
         accumulator.push(frame.event, payload);

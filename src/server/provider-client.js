@@ -6,15 +6,18 @@ import {
   protocolAuthHeaders,
 } from "./protocols.js";
 import { resolveOfficialModelCapabilities } from "./model-capability-catalog.js";
+import { sanitizeProviderErrorSummary } from "./provider-redaction.js";
 import { readProviderResponse, streamingEndpoint } from "./provider-stream.js";
 import { getResponsesToolDefinitions } from "../shared/excel-tools.js";
 
 export const AGENT_INSTRUCTIONS = `你是当前 Microsoft Excel 工作簿内的操作 Agent。
 仅通过已提供的 Excel 工具读取或修改工作簿；工具没有返回成功时，不得声称操作已经完成。
 先读取必要的工作簿上下文，再进行精确、最小范围的操作。值、公式、格式、表格、图表、排序和工作表变更都必须使用对应工具。
+对于可计算的派生结果，优先写入 Excel 公式而非静态值；不要覆盖用户未指定的内容或范围。
 任务窗格会按照用户当前选择的审批模式处理修改工具；不得规避、合并隐藏或诱导改变该模式。
 公式使用 Excel A1 引用和标准函数名。遇到范围、工作表或参数不明确时，先使用读取工具确认。
 工具返回失败时，先根据错误代码和参数路径自行修正；范围过大时缩小或分块继续。用户明确拒绝或停止时不得换一种调用方式绕过。
+每次修改后检查工具结果中的 impact 和 verification；存在公式错误时先修复，无法修复或验证失败时必须如实说明，不能声称任务已完成。
 最终用简体中文简洁说明实际完成结果；如果用户拒绝或工具失败，如实说明。`;
 
 const ANTHROPIC_VERSION = "2023-06-01";
@@ -47,16 +50,7 @@ export class ProviderError extends Error {
 }
 
 function sanitizeSummary(text, token) {
-  let summary = typeof text === "string" ? text : "";
-  if (token) summary = summary.split(token).join("[REDACTED]");
-  return summary
-    .replace(/authorization\s*[:=]\s*bearer\s+[^\s,;"}]+/gi, "Authorization: Bearer [REDACTED]")
-    .replace(/bearer\s+[^\s,;"}]+/gi, "Bearer [REDACTED]")
-    .replace(/x-api-key\s*[:=]\s*[^\s,;}]+/gi, "x-api-key: [REDACTED]")
-    .replace(/x-goog-api-key\s*[:=]\s*[^\s,;}]+/gi, "x-goog-api-key: [REDACTED]")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 500);
+  return sanitizeProviderErrorSummary(text, { secrets: [token] });
 }
 
 function combineAbortSignal(externalSignal, timeoutMs) {
@@ -182,6 +176,18 @@ function normalizedMessage(role, text) {
   };
 }
 
+function isRecord(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function hasOwn(value, key) {
+  return Object.prototype.hasOwnProperty.call(value, key);
+}
+
+function invalidProviderResponse(message) {
+  return new ProviderError("PROVIDER_RESPONSE_INVALID", message, { statusCode: 502 });
+}
+
 function imageUrlForChat(dataUrl) {
   return { type: "image_url", image_url: { url: dataUrl } };
 }
@@ -305,8 +311,17 @@ function toAnthropicMessages(input) {
     }
     if (item?.type === "reasoning") {
       flushTools();
-      if (typeof item.thinking === "string" && item.thinking !== "") {
-        assistantBlocks.push({ type: "thinking", thinking: item.thinking, ...(item.signature ? { signature: item.signature } : {}) });
+      if (item.redacted === true && typeof item.data === "string" && item.data !== "") {
+        assistantBlocks.push({ type: "redacted_thinking", data: item.data });
+      } else if (typeof item.thinking === "string") {
+        const signature = typeof item.signature === "string" ? item.signature : null;
+        if (item.thinking !== "" || signature !== null) {
+          assistantBlocks.push({
+            type: "thinking",
+            thinking: item.thinking,
+            ...(signature !== null ? { signature } : {}),
+          });
+        }
       }
       continue;
     }
@@ -339,27 +354,66 @@ function anthropicTools(toolDefinitions) {
 }
 
 function normalizeAnthropicResponse(payload) {
+  if (
+    !isRecord(payload) ||
+    payload.type !== "message" ||
+    payload.role !== "assistant" ||
+    !Array.isArray(payload.content) ||
+    payload.content.length === 0
+  ) {
+    throw invalidProviderResponse("Anthropic 响应缺少完成消息内容。");
+  }
   const output = [];
-  for (const block of payload?.content ?? []) {
-    if (block?.type === "text" && typeof block.text === "string") {
-      output.push(normalizedMessage("assistant", block.text));
-    } else if (block?.type === "thinking" && typeof block.thinking === "string") {
-      output.push({ type: "reasoning", thinking: block.thinking, ...(block.signature ? { signature: block.signature } : {}) });
-    } else if (block?.type === "tool_use" && typeof block.name === "string") {
+  for (const block of payload.content) {
+    if (!isRecord(block) || typeof block.type !== "string") {
+      throw invalidProviderResponse("Anthropic 响应包含无效内容块。");
+    }
+    if (block.type === "text") {
+      if (typeof block.text !== "string") {
+        throw invalidProviderResponse("Anthropic 文本内容块无效。");
+      }
+      const message = normalizedMessage("assistant", block.text);
+      if (message) output.push(message);
+    } else if (block.type === "thinking") {
+      if (typeof block.thinking !== "string" || (hasOwn(block, "signature") && typeof block.signature !== "string")) {
+        throw invalidProviderResponse("Anthropic thinking 内容块无效。");
+      }
+      if (block.thinking !== "" || hasOwn(block, "signature")) {
+        output.push({
+          type: "reasoning",
+          thinking: block.thinking,
+          ...(hasOwn(block, "signature") ? { signature: block.signature } : {}),
+        });
+      }
+    } else if (block.type === "redacted_thinking") {
+      if (typeof block.data !== "string" || block.data === "") {
+        throw invalidProviderResponse("Anthropic redacted thinking 内容块无效。");
+      }
+      output.push({ type: "reasoning", redacted: true, data: block.data });
+    } else if (block.type === "tool_use") {
+      if (
+        typeof block.id !== "string" ||
+        block.id === "" ||
+        typeof block.name !== "string" ||
+        block.name === "" ||
+        !isRecord(block.input)
+      ) {
+        throw invalidProviderResponse("Anthropic 工具调用内容块无效。");
+      }
       output.push({
         type: "function_call",
         name: block.name,
-        call_id: typeof block.id === "string" && block.id !== "" ? block.id : `anthropic-call-${output.length + 1}`,
-        arguments: JSON.stringify(block.input ?? {}),
+        call_id: block.id,
+        arguments: JSON.stringify(block.input),
       });
+    } else {
+      throw invalidProviderResponse("Anthropic 响应包含不受支持的内容块。");
     }
   }
   const compact = output.filter(Boolean);
-  if (compact.length === 0) compact.push(normalizedMessage("assistant", "") ?? {
-    type: "message",
-    role: "assistant",
-    content: [{ type: "output_text", text: "" }],
-  });
+  if (!compact.some((item) => item.type === "message" || item.type === "function_call")) {
+    throw invalidProviderResponse("Anthropic 响应没有可继续处理的完成内容。");
+  }
   return { output: compact, usage: normalizeUsage(payload?.usage) };
 }
 
@@ -450,14 +504,48 @@ function geminiTools(toolDefinitions) {
 }
 
 function normalizeGeminiResponse(payload) {
+  if (!isRecord(payload) || !Array.isArray(payload.candidates) || payload.candidates.length === 0) {
+    throw invalidProviderResponse("Gemini 响应缺少候选结果。");
+  }
+  const candidate = payload.candidates[0];
+  if (
+    !isRecord(candidate) ||
+    typeof candidate.finishReason !== "string" ||
+    candidate.finishReason === "" ||
+    !isRecord(candidate.content) ||
+    !Array.isArray(candidate.content.parts) ||
+    candidate.content.parts.length === 0
+  ) {
+    throw invalidProviderResponse("Gemini 响应候选结果未完成或内容无效。");
+  }
   const output = [];
-  const parts = payload?.candidates?.[0]?.content?.parts ?? [];
+  const parts = candidate.content.parts;
   for (const part of parts) {
-    if (typeof part?.text === "string" && part.text !== "") {
+    if (!isRecord(part)) {
+      throw invalidProviderResponse("Gemini 响应包含无效内容块。");
+    }
+    let handled = false;
+    if (hasOwn(part, "text")) {
+      if (typeof part.text !== "string") {
+        throw invalidProviderResponse("Gemini 文本内容块无效。");
+      }
+      handled = true;
+    }
+    if (typeof part.text === "string" && part.text !== "") {
       if (part.thought === true) output.push({ type: "reasoning", thinking: part.text });
       else output.push(normalizedMessage("assistant", part.text));
     }
-    if (part?.functionCall && typeof part.functionCall.name === "string") {
+    if (hasOwn(part, "functionCall")) {
+      if (
+        !isRecord(part.functionCall) ||
+        typeof part.functionCall.name !== "string" ||
+        part.functionCall.name === "" ||
+        (hasOwn(part.functionCall, "id") && (typeof part.functionCall.id !== "string" || part.functionCall.id === "")) ||
+        (hasOwn(part.functionCall, "args") && !isRecord(part.functionCall.args))
+      ) {
+        throw invalidProviderResponse("Gemini 工具调用内容块无效。");
+      }
+      handled = true;
       const callId = part.functionCall.id ?? `gemini-call-${output.length + 1}`;
       output.push({
         type: "function_call",
@@ -466,13 +554,12 @@ function normalizeGeminiResponse(payload) {
         arguments: JSON.stringify(part.functionCall.args ?? {}),
       });
     }
+    if (!handled) throw invalidProviderResponse("Gemini 响应包含不受支持的内容块。");
   }
   const compact = output.filter(Boolean);
-  if (compact.length === 0) compact.push(normalizedMessage("assistant", "") ?? {
-    type: "message",
-    role: "assistant",
-    content: [{ type: "output_text", text: "" }],
-  });
+  if (!compact.some((item) => item.type === "message" || item.type === "function_call")) {
+    throw invalidProviderResponse("Gemini 响应没有可继续处理的完成内容。");
+  }
   const usageMetadata = payload?.usageMetadata;
   return {
     output: compact,

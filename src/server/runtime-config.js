@@ -16,6 +16,7 @@ import {
 } from "./protocols.js";
 import { resolveOfficialModelCapabilities } from "./model-capability-catalog.js";
 import { DEFAULT_MAX_STEPS, normalizeMaxSteps } from "./limits.js";
+import { sanitizeProviderErrorSummary } from "./provider-redaction.js";
 import { DEFAULT_APPROVAL_MODE, isApprovalMode, SettingsStore } from "./settings-store.js";
 
 const MODEL_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$/;
@@ -171,9 +172,7 @@ export function parseModelCatalog(payload, protocol = DEFAULT_PROTOCOL) {
 }
 
 function safeProviderMessage(text, token) {
-  let message = typeof text === "string" ? text : "";
-  if (token) message = message.split(token).join("[REDACTED]");
-  return message.replace(/\s+/g, " ").trim().slice(0, 300);
+  return sanitizeProviderErrorSummary(text, { secrets: [token], maxLength: 300 });
 }
 
 function buildModelsUrl(baseUrl, protocol) {

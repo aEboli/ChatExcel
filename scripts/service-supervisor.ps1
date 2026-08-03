@@ -11,6 +11,7 @@ $projectRoot = (Resolve-Path -LiteralPath $ProjectRoot).Path
 $nodePath = (Resolve-Path -LiteralPath $NodePath).Path
 $runtimeDirectory = Join-Path $projectRoot ".runtime"
 $pidPath = Join-Path $runtimeDirectory "service.pid"
+$identityPath = Join-Path $runtimeDirectory "service.identity"
 $supervisorPidPath = Join-Path $runtimeDirectory "service-supervisor.pid"
 $supervisorLockPath = Join-Path $runtimeDirectory "service-supervisor.lock"
 $stopPath = Join-Path $runtimeDirectory "service.stop"
@@ -18,7 +19,13 @@ $stdoutPath = Join-Path $runtimeDirectory "service.stdout.log"
 $stderrPath = Join-Path $runtimeDirectory "service.stderr.log"
 $logPath = Join-Path $runtimeDirectory "service-supervisor.log"
 $servicePort = 3210
-$healthUrl = "https://localhost:$servicePort/api/health"
+$serviceAddress = "127.0.0.1"
+$healthUrl = "https://${serviceAddress}:$servicePort/api/health"
+$serviceEntryPath = (Resolve-Path (Join-Path $projectRoot "src\server\index.js")).Path
+$package = [IO.File]::ReadAllText((Join-Path $projectRoot "package.json"), [Text.Encoding]::UTF8) | ConvertFrom-Json
+$expectedService = "ChatExcel"
+$expectedVersion = [string]$package.version
+$requiredCapabilities = @("office-addin", "native-xls")
 $startupGracePeriod = [TimeSpan]::FromSeconds(8)
 $healthFailureThreshold = 3
 $maximumRecoveryDelaySeconds = 30
@@ -30,7 +37,13 @@ $script:nextDiagnosticAt = [DateTimeOffset]::MinValue
 
 function Get-Listener {
     Get-NetTCPConnection -LocalPort $servicePort -State Listen -ErrorAction SilentlyContinue |
+        Where-Object { $_.LocalAddress -eq $serviceAddress } |
         Select-Object -First 1
+}
+
+function Quote-ProcessArgument {
+    param([string]$Value)
+    return '"' + $Value.Replace('"', '\"') + '"'
 }
 
 function Test-Health {
@@ -47,7 +60,18 @@ function Test-Health {
     }
     try {
         $response = Invoke-RestMethod -Uri $healthUrl -Method Get -TimeoutSec 1
-        return $response.ok -eq $true
+        if ($response.ok -ne $true -or
+            $response.service -ne $expectedService -or
+            $response.version -ne $expectedVersion) {
+            return $false
+        }
+        $capabilities = @($response.capabilities)
+        foreach ($requiredCapability in $requiredCapabilities) {
+            if ($capabilities -notcontains $requiredCapability) {
+                return $false
+            }
+        }
+        return $true
     }
     catch {
         return $false
@@ -67,11 +91,12 @@ function Write-SupervisorLog {
 }
 
 function Remove-ServicePid {
-    Remove-Item -LiteralPath $pidPath -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $pidPath,$identityPath -Force -ErrorAction SilentlyContinue
 }
 
 function Get-TrackedService {
     if (-not (Test-Path -LiteralPath $pidPath)) {
+        Remove-Item -LiteralPath $identityPath -Force -ErrorAction SilentlyContinue
         return $null
     }
 
@@ -84,6 +109,49 @@ function Get-TrackedService {
 
     $process = Get-Process -Id $servicePid -ErrorAction SilentlyContinue
     if ($null -eq $process -or $process.ProcessName -ne "node") {
+        Remove-ServicePid
+        return $null
+    }
+    try {
+        $actualStartTicks = $process.StartTime.ToUniversalTime().Ticks
+        $processInfo = Get-CimInstance -ClassName Win32_Process -Filter "ProcessId = $servicePid" -ErrorAction Stop
+        $actualNodePath = [string]$processInfo.ExecutablePath
+        $commandLine = [string]$processInfo.CommandLine
+    }
+    catch {
+        Remove-ServicePid
+        return $null
+    }
+    $identity = @(Get-Content -LiteralPath $identityPath -ErrorAction SilentlyContinue)
+    $startTicks = 0L
+    if ($identity.Count -lt 3) {
+        $listener = Get-Listener
+        $pidRecordedAt = (Get-Item -LiteralPath $pidPath -ErrorAction SilentlyContinue).LastWriteTimeUtc
+        $pidMatchesStart = $null -ne $pidRecordedAt -and
+            [Math]::Abs(($process.StartTime.ToUniversalTime() - $pidRecordedAt).TotalSeconds) -le 5
+        $usesProjectEntry = $commandLine.IndexOf($serviceEntryPath, [StringComparison]::OrdinalIgnoreCase) -ge 0 -or
+            $commandLine -match 'src[\\/]server[\\/]index\.js'
+        if ($null -eq $listener -or
+            $listener.OwningProcess -ne $servicePid -or
+            -not $pidMatchesStart -or
+            $actualNodePath -ine $nodePath -or
+            -not $usesProjectEntry) {
+            Remove-ServicePid
+            return $null
+        }
+        $identity = @($actualStartTicks, $actualNodePath, $serviceEntryPath)
+        Set-Content -LiteralPath $identityPath -Value $identity -Encoding utf8
+    }
+    if (-not [long]::TryParse($identity[0], [ref]$startTicks)) {
+        Remove-ServicePid
+        return $null
+    }
+    $recordedNodePath = [string]$identity[1]
+    $recordedEntryPath = [string]$identity[2]
+    if ($actualStartTicks -ne $startTicks -or
+        $actualNodePath -ine $recordedNodePath -or
+        $recordedEntryPath -ine $serviceEntryPath -or
+        $commandLine.IndexOf($recordedEntryPath, [StringComparison]::OrdinalIgnoreCase) -lt 0) {
         Remove-ServicePid
         return $null
     }
@@ -142,13 +210,30 @@ function Start-TrackedService {
 
     $process = Start-Process `
         -FilePath $nodePath `
-        -ArgumentList @("src/server/index.js") `
+        -ArgumentList @((Quote-ProcessArgument $serviceEntryPath)) `
         -WorkingDirectory $projectRoot `
         -WindowStyle Hidden `
         -RedirectStandardOutput $stdoutPath `
         -RedirectStandardError $stderrPath `
         -PassThru
-    Set-Content -LiteralPath $pidPath -Value $process.Id -Encoding ascii
+    try {
+        $startedNodePath = [string]$process.Path
+        if ([string]::IsNullOrWhiteSpace($startedNodePath)) {
+            throw "The managed service executable path is unavailable."
+        }
+        $serviceIdentity = @(
+            $process.StartTime.ToUniversalTime().Ticks,
+            $startedNodePath,
+            $serviceEntryPath
+        )
+        Set-Content -LiteralPath $identityPath -Value $serviceIdentity -Encoding utf8
+        Set-Content -LiteralPath $pidPath -Value $process.Id -Encoding ascii
+    }
+    catch {
+        Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+        Remove-ServicePid
+        throw
+    }
     $script:lastStartAt = [DateTimeOffset]::UtcNow
     $script:nextRecoveryAt = $script:lastStartAt.Add($startupGracePeriod)
     Write-SupervisorLog "Started ChatExcel service PID $($process.Id)."

@@ -28,6 +28,30 @@ test("范围写入的回退预览保留目标地址和单元格内容", () => {
   ]);
 });
 
+test("拒绝或失败的写入只显示失败摘要，不展示参数中的待写入值", async () => {
+  const details = {
+    call: { name: "write_values" },
+    tool: { label: "写入值" },
+    arguments: {
+      worksheet: "销售",
+      address: "A1:B1",
+      values: [[1, 2]],
+    },
+    output: {
+      ok: false,
+      error: { code: "USER_DENIED", message: "用户拒绝执行此修改操作。" },
+    },
+  };
+
+  const fallback = historyPreviewFallback(details);
+  const officePreview = await captureOfficeHistoryPreview(details);
+
+  assert.equal(fallback.kind, "summary");
+  assert.equal(fallback.message, "用户拒绝执行此修改操作。");
+  assert.equal("rows" in fallback, false);
+  assert.deepEqual(officePreview, fallback);
+});
+
 test("预览目标从实际输出中解析工作表和图表", () => {
   assert.deepEqual(
     historyPreviewTarget({

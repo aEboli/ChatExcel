@@ -4,16 +4,25 @@ $scriptDirectory = Split-Path -Parent $MyInvocation.MyCommand.Path
 $projectRoot = (Resolve-Path (Join-Path $scriptDirectory "..")).Path
 $runtimeDirectory = Join-Path $projectRoot ".runtime"
 $pidPath = Join-Path $runtimeDirectory "service.pid"
+$identityPath = Join-Path $runtimeDirectory "service.identity"
 $supervisorPidPath = Join-Path $runtimeDirectory "service-supervisor.pid"
 $supervisorScript = Join-Path $scriptDirectory "service-supervisor.ps1"
 $stopPath = Join-Path $runtimeDirectory "service.stop"
 $supervisorStdoutPath = Join-Path $runtimeDirectory "service-supervisor.stdout.log"
 $supervisorStderrPath = Join-Path $runtimeDirectory "service-supervisor.stderr.log"
 $servicePort = 3210
-$healthUrl = "https://localhost:$servicePort/api/health"
+$serviceAddress = "127.0.0.1"
+$healthUrl = "https://${serviceAddress}:$servicePort/api/health"
+$serviceEntryPath = (Resolve-Path (Join-Path $projectRoot "src\server\index.js")).Path
+$nodePath = (Resolve-Path (Get-Command node -ErrorAction Stop).Source).Path
+$package = [IO.File]::ReadAllText((Join-Path $projectRoot "package.json"), [Text.Encoding]::UTF8) | ConvertFrom-Json
+$expectedService = "ChatExcel"
+$expectedVersion = [string]$package.version
+$requiredCapabilities = @("office-addin", "native-xls")
 
 function Get-Listener {
     Get-NetTCPConnection -LocalPort $servicePort -State Listen -ErrorAction SilentlyContinue |
+        Where-Object { $_.LocalAddress -eq $serviceAddress } |
         Select-Object -First 1
 }
 
@@ -23,7 +32,18 @@ function Test-Health {
     }
     try {
         $response = Invoke-RestMethod -Uri $healthUrl -Method Get -TimeoutSec 1
-        return $response.ok -eq $true
+        if ($response.ok -ne $true -or
+            $response.service -ne $expectedService -or
+            $response.version -ne $expectedVersion) {
+            return $false
+        }
+        $capabilities = @($response.capabilities)
+        foreach ($requiredCapability in $requiredCapabilities) {
+            if ($capabilities -notcontains $requiredCapability) {
+                return $false
+            }
+        }
+        return $true
     }
     catch {
         return $false
@@ -31,11 +51,12 @@ function Test-Health {
 }
 
 function Remove-ServicePid {
-    Remove-Item -LiteralPath $pidPath -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $pidPath,$identityPath -Force -ErrorAction SilentlyContinue
 }
 
 function Get-TrackedService {
     if (-not (Test-Path -LiteralPath $pidPath)) {
+        Remove-Item -LiteralPath $identityPath -Force -ErrorAction SilentlyContinue
         return $null
     }
 
@@ -48,6 +69,49 @@ function Get-TrackedService {
 
     $process = Get-Process -Id $servicePid -ErrorAction SilentlyContinue
     if ($null -eq $process -or $process.ProcessName -ne "node") {
+        Remove-ServicePid
+        return $null
+    }
+    try {
+        $actualStartTicks = $process.StartTime.ToUniversalTime().Ticks
+        $processInfo = Get-CimInstance -ClassName Win32_Process -Filter "ProcessId = $servicePid" -ErrorAction Stop
+        $actualNodePath = [string]$processInfo.ExecutablePath
+        $commandLine = [string]$processInfo.CommandLine
+    }
+    catch {
+        Remove-ServicePid
+        return $null
+    }
+    $identity = @(Get-Content -LiteralPath $identityPath -ErrorAction SilentlyContinue)
+    $startTicks = 0L
+    if ($identity.Count -lt 3) {
+        $listener = Get-Listener
+        $pidRecordedAt = (Get-Item -LiteralPath $pidPath -ErrorAction SilentlyContinue).LastWriteTimeUtc
+        $pidMatchesStart = $null -ne $pidRecordedAt -and
+            [Math]::Abs(($process.StartTime.ToUniversalTime() - $pidRecordedAt).TotalSeconds) -le 5
+        $usesProjectEntry = $commandLine.IndexOf($serviceEntryPath, [StringComparison]::OrdinalIgnoreCase) -ge 0 -or
+            $commandLine -match 'src[\\/]server[\\/]index\.js'
+        if ($null -eq $listener -or
+            $listener.OwningProcess -ne $servicePid -or
+            -not $pidMatchesStart -or
+            $actualNodePath -ine $nodePath -or
+            -not $usesProjectEntry) {
+            Remove-ServicePid
+            return $null
+        }
+        $identity = @($actualStartTicks, $actualNodePath, $serviceEntryPath)
+        Set-Content -LiteralPath $identityPath -Value $identity -Encoding utf8
+    }
+    if (-not [long]::TryParse($identity[0], [ref]$startTicks)) {
+        Remove-ServicePid
+        return $null
+    }
+    $recordedNodePath = [string]$identity[1]
+    $recordedEntryPath = [string]$identity[2]
+    if ($actualStartTicks -ne $startTicks -or
+        $actualNodePath -ine $recordedNodePath -or
+        $recordedEntryPath -ine $serviceEntryPath -or
+        $commandLine.IndexOf($recordedEntryPath, [StringComparison]::OrdinalIgnoreCase) -lt 0) {
         Remove-ServicePid
         return $null
     }
@@ -99,7 +163,6 @@ function Start-Supervisor {
     }
 
     Remove-Item -LiteralPath $stopPath -Force -ErrorAction SilentlyContinue
-    $nodePath = (Get-Command node -ErrorAction Stop).Source
     $powershellPath = Join-Path $env:WINDIR "System32\WindowsPowerShell\v1.0\powershell.exe"
     if (-not (Test-Path -LiteralPath $powershellPath)) {
         $powershellPath = "powershell.exe"
@@ -165,4 +228,4 @@ if ($null -eq $tracked -or $null -eq $listener -or $listener.OwningProcess -ne $
     throw "The local service passed health checks but is not owned by the project PID."
 }
 
-Write-Output "ChatExcel started with recovery monitoring: https://localhost:$servicePort (PID $($tracked.Id))"
+Write-Output "ChatExcel started with recovery monitoring: https://${serviceAddress}:$servicePort (PID $($tracked.Id))"

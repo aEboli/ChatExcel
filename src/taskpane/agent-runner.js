@@ -56,6 +56,13 @@ export class AgentRunner {
     this.sessionId = sessionId.trim();
   }
 
+  discardSession(sessionId = this.sessionId) {
+    if (!sessionId || this.sessionId !== sessionId) return false;
+    this.controller?.abort();
+    this.sessionId = null;
+    return true;
+  }
+
   async capturePreview(details) {
     try {
       return await this.captureToolPreview(details);
@@ -180,35 +187,33 @@ export class AgentRunner {
     }
   }
 
-  async stop() {
+  async stop({ throwOnCancelFailure = false } = {}) {
     if (!this.running) {
-      return;
+      return true;
     }
     const sessionId = this.sessionId;
     this.controller?.abort();
-    this.sessionId = null;
     if (sessionId) {
       try {
         await this.api.cancel({ sessionId });
-      } catch {
-        // The local request is already stopped; a missing server session is harmless here.
+      } catch (error) {
+        if (throwOnCancelFailure) throw error;
+        return false;
       }
+      this.discardSession(sessionId);
     }
+    return true;
   }
 
   async resetSession() {
     if (this.running) {
-      await this.stop();
+      await this.stop({ throwOnCancelFailure: true });
       return;
     }
     const sessionId = this.sessionId;
-    this.sessionId = null;
     if (sessionId) {
-      try {
-        await this.api.cancel({ sessionId });
-      } catch {
-        // A stale or expired in-memory session needs no further cleanup.
-      }
+      await this.api.cancel({ sessionId });
+      this.discardSession(sessionId);
     }
   }
 }
