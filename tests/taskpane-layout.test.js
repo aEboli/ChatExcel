@@ -2,17 +2,29 @@ import assert from "node:assert/strict";
 import { access, readFile } from "node:fs/promises";
 import test from "node:test";
 
-const [taskpaneHtml, taskpaneJs, taskpaneCss, manifest, historyPreview] = await Promise.all([
+const [taskpaneHtml, taskpaneJs, taskpaneCss, manifest, historyPreview, modelSelection] = await Promise.all([
   readFile(new URL("../src/taskpane/taskpane.html", import.meta.url), "utf8"),
   readFile(new URL("../src/taskpane/taskpane.js", import.meta.url), "utf8"),
   readFile(new URL("../src/taskpane/taskpane.css", import.meta.url), "utf8"),
   readFile(new URL("../manifest.xml", import.meta.url), "utf8"),
   readFile(new URL("../src/taskpane/history-preview.js", import.meta.url), "utf8"),
+  readFile(new URL("../src/taskpane/model-selection.js", import.meta.url), "utf8"),
 ]);
 
-test("任务窗格不再提供图片附件入口，并优先单行展示控制条", () => {
-  assert.doesNotMatch(taskpaneHtml, /id="(?:image-input|image-button|attachment-list)"/);
-  assert.doesNotMatch(taskpaneJs, /prepareImageFile|addSelectedImages|clipboardData\?\.files/);
+test("任务窗格提供剪贴板图片附件、放大预览和窄窗格布局", () => {
+  assert.match(taskpaneHtml, /id="attachment-error"[^>]+role="alert"/);
+  assert.match(taskpaneHtml, /id="attachment-list"[^>]+aria-label="待发送图片"/);
+  assert.match(taskpaneHtml, /id="image-preview-modal"/);
+  assert.match(taskpaneHtml, /id="image-preview-close"[^>]+aria-label="关闭图片预览"/);
+  assert.match(taskpaneJs, /clipboardImageFiles\(clipboardData\)/);
+  assert.match(taskpaneJs, /promptInput\.addEventListener\("paste"/);
+  assert.match(taskpaneJs, /clipboardData\?\.getData\?\.\("text\/plain"\)/);
+  assert.match(taskpaneJs, /message === "" && attachments\.length === 0/);
+  assert.match(taskpaneJs, /elements\.imagePreviewClose\.addEventListener\("click", closeImagePreview\)/);
+  assert.match(taskpaneJs, /if \(!elements\.imagePreviewModal\.hidden\) \{[\s\S]*?closeImagePreview\(\)/);
+  assert.match(taskpaneCss, /\.attachment-list\s*\{[\s\S]*?overflow-x:\s*auto;/);
+  assert.match(taskpaneCss, /\.attachment-item\s*\{[\s\S]*?flex:\s*0\s+0\s+66px;/);
+  assert.match(taskpaneCss, /\.image-preview-backdrop\s*\{[\s\S]*?position:\s*fixed;/);
   assert.match(taskpaneCss, /\.composer-toolbar\s*\{[\s\S]*grid-template-columns:\s*minmax\(0,\s*1fr\)\s+auto;/);
   assert.match(taskpaneCss, /\.model-anchor\s*\{[\s\S]*max-width:\s*none;/);
   const emptyStateRule = taskpaneCss.match(/\.empty-state\s*\{[^}]*\}/)?.[0] ?? "";
@@ -50,7 +62,8 @@ test("底部思考、上下文和审批控件使用可读的状态图标", () =>
   assert.match(taskpaneHtml, /id="mode-icon"[^>]+approval\.svg/);
   assert.match(taskpaneCss, /\.context-badge\s*\{[\s\S]*border-radius:\s*50%;/);
   assert.match(taskpaneCss, /\.effort-button\[data-effort-level="4"\]/);
-  assert.match(taskpaneJs, /function reasoningEffortLevel\(effort\)/);
+  assert.match(taskpaneJs, /reasoningEffortLevel,[\s\S]{0,200}from "\.\/model-selection\.js"/);
+  assert.match(modelSelection, /export function reasoningEffortLevel\(effort\)/);
   assert.match(taskpaneJs, /contextButton\.style\.setProperty\("--context-progress"/);
   assert.match(taskpaneJs, /elements\.modeButton\.setAttribute\("aria-label", elements\.modeButton\.title\)/);
 });
@@ -64,7 +77,10 @@ test("模型和推理强度控件按 Codex 式设置行显示当前值", () => {
   assert.match(taskpaneCss, /\.settings-row-button\s*\{[\s\S]*justify-content:\s*flex-start;/);
   assert.match(taskpaneCss, /\.settings-row-button \.chevron-forward\s*\{[\s\S]*transform:\s*rotate\(-90deg\)/);
   assert.match(taskpaneJs, /function modelDisplayName\(modelId\)/);
-  assert.match(taskpaneJs, /function reasoningEffortDisplayName\(effort\)/);
+  assert.match(taskpaneJs, /reasoningEffortDisplayName,[\s\S]{0,200}from "\.\/model-selection\.js"/);
+  assert.match(modelSelection, /value === "minimal"[\s\S]*return "最低"/);
+  assert.match(modelSelection, /value === "xhigh"[\s\S]*return "极高"/);
+  assert.match(modelSelection, /value === "max"[\s\S]*return "最高"/);
   assert.match(taskpaneJs, /推理强度：\$\{effortName\}/);
 });
 
@@ -117,6 +133,15 @@ test("模型配置按能力目录回填上下文，思考等级保持自动只�
   assert.doesNotMatch(taskpaneJs, /reasoningEffort:\s*elements\.settingsEffort\.value/);
 });
 
+test("任务窗格区分已证实能力、兼容档位和自动状态", () => {
+  assert.match(taskpaneJs, /compatibleReasoningEfforts/);
+  assert.match(taskpaneJs, /reasoningEffortMenuValues\(modelEntry\(selectedModel\)\)/);
+  assert.match(taskpaneJs, /description = effort === null[\s\S]*"兼容档位"/);
+  assert.match(taskpaneJs, /replaceConversationModels\(result\.models\)/);
+  assert.match(taskpaneJs, /settingsDiscoveredModels = result\.models\.map\(normalizeReasoningModel\)/);
+  assert.match(taskpaneJs, /模型接口未声明思考等级，默认使用提供方自动模式。/);
+});
+
 test("流式任务在动作完成后重新定位最终助手消息", () => {
   assert.match(taskpaneJs, /history\.finalizeMessage\(messageId, text(?:, \{ preservePrefixLength \})?\)/);
 });
@@ -151,7 +176,7 @@ test("任务窗格恢复并单独持久化审批偏好", () => {
   assert.match(taskpaneJs, /async function persistApprovalMode\(mode\)/);
   assert.match(taskpaneJs, /setApprovalMode\(previousMode\)/);
   assert.match(taskpaneJs, /approvalModeSaving/);
-  assert.match(taskpaneJs, /message === "" \|\| runner\.running \|\| approvalModeSaving \|\| !configState/);
+  assert.match(taskpaneJs, /message === "" && attachments\.length === 0\) \|\| runner\.running \|\| approvalModeSaving \|\| !configState/);
 });
 
 test("审批请求保持自动告知直执和需审批手动决定", () => {

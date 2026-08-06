@@ -329,6 +329,12 @@ function visiblePresentation(input) {
   return { messages };
 }
 
+function containsImageInput(input) {
+  return Array.isArray(input) && input.some((item) =>
+    Array.isArray(item?.content) && item.content.some((part) => part?.type === "input_image"),
+  );
+}
+
 function interruptedToolOutput(call) {
   return recoverableToolOutput(
     "TOOL_EXECUTION_INTERRUPTED",
@@ -422,6 +428,7 @@ export class SessionManager {
       suspendedForRecovery: false,
       cancelled: false,
       recoveryUnavailable: false,
+      imageRecoveryDisabled: false,
       checkpointTail: Promise.resolve(),
     };
     this.sessions.set(sessionId, session);
@@ -714,6 +721,26 @@ export class SessionManager {
     session.recoveryPhase = phase;
     if (!this.recoveryStore || !session.workbookBinding) return false;
 
+    if (containsImageInput(session.input)) {
+      if (!session.imageRecoveryDisabled) {
+        session.imageRecoveryDisabled = true;
+        if (!session.recoveryUnavailable) {
+          session.recoveryUnavailable = true;
+          session.streamSink?.({ type: "recovery_unavailable" });
+        }
+        const clearPreviousCheckpoint = async () => {
+          if (session.cancelled) return false;
+          await this.#clearRecovery(session.id, session.workbookBinding);
+          return false;
+        };
+        const previous = session.checkpointTail ?? Promise.resolve();
+        const result = previous.then(clearPreviousCheckpoint, clearPreviousCheckpoint);
+        session.checkpointTail = result.catch(() => {});
+        return result;
+      }
+      return false;
+    }
+
     const checkpoint = {
       sessionId: session.id,
       workbookKey: session.workbookBinding,
@@ -819,6 +846,7 @@ export class SessionManager {
       suspendedForRecovery: false,
       cancelled: false,
       recoveryUnavailable: false,
+      imageRecoveryDisabled: false,
     };
   }
 

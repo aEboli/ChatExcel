@@ -326,6 +326,35 @@ test("Agent 接口把图片和模型选项传给会话管理器", async (t) => {
   assert.equal(captured.options.workbookBinding, "https://example.test/workbooks/budget.xlsx");
 });
 
+test("Agent 接口允许仅图片请求并保留附件", async (t) => {
+  let captured;
+  const baseUrl = await startServer(t, {
+    sessionManager: {
+      async start(message, sessionId, options) {
+        captured = { message, sessionId, options };
+        return { sessionId, status: "completed", message: "ok" };
+      },
+    },
+  });
+  const attachments = [{ name: "截图.png", dataUrl: "data:image/png;base64,YQ==" }];
+  const response = await fetch(`${baseUrl}/api/sessions`, {
+    method: "POST",
+    headers: {
+      Origin: "https://localhost:3210",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      sessionId: "session-http-image-only-01",
+      message: "",
+      attachments,
+    }),
+  });
+
+  assert.equal(response.status, 201);
+  assert.equal(captured.message, "");
+  assert.deepEqual(captured.options.attachments, attachments);
+});
+
 test("Agent 后续消息接口把工作簿绑定传给会话管理器", async (t) => {
   let captured;
   const baseUrl = await startServer(t, {

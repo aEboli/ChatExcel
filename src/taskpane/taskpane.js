@@ -7,6 +7,20 @@ import {
   historyPreviewTarget,
 } from "./history-preview.js";
 import { HistoryState } from "./history-state.js";
+import {
+  normalizeReasoningModel,
+  reasoningEffortDisplayName,
+  reasoningEffortLevel,
+  reasoningEffortMenuValues,
+  reconcileReasoningEffort,
+} from "./model-selection.js";
+import {
+  AttachmentError,
+  clipboardImageFiles,
+  formatAttachmentSize,
+  MAX_ATTACHMENTS,
+  prepareImageFile,
+} from "./image-attachments.js";
 
 const pageParameters = new URLSearchParams(globalThis.location.search);
 const previewMode = pageParameters.get("preview") === "1";
@@ -49,6 +63,8 @@ const elements = {
   approvalArguments: document.querySelector("#approval-arguments"),
   approveButton: document.querySelector("#approve-button"),
   denyButton: document.querySelector("#deny-button"),
+  attachmentError: document.querySelector("#attachment-error"),
+  attachmentList: document.querySelector("#attachment-list"),
   promptInput: document.querySelector("#prompt-input"),
   modelButton: document.querySelector("#model-button"),
   modelLabel: document.querySelector("#model-label"),
@@ -102,6 +118,9 @@ const elements = {
   confirmMessage: document.querySelector("#confirm-message"),
   confirmCancelButton: document.querySelector("#confirm-cancel-button"),
   confirmAcceptButton: document.querySelector("#confirm-accept-button"),
+  imagePreviewModal: document.querySelector("#image-preview-modal"),
+  imagePreviewImage: document.querySelector("#image-preview-image"),
+  imagePreviewClose: document.querySelector("#image-preview-close"),
 };
 
 const history = new HistoryState();
@@ -109,6 +128,8 @@ const activityRows = new Map();
 const activityGroups = new Map();
 const registeredWorksheetIds = new Set();
 const settingsBackground = [...document.querySelectorAll(".app-shell > :not(#settings-view):not(#confirm-modal)")];
+let attachments = [];
+let imagePreviewTrigger = null;
 let approvalMode = "required";
 let approvalModeSaving = false;
 let providerConnectivityState = "checking";
@@ -308,17 +329,17 @@ async function requestStream(path, { method = "POST", body, signal, onEvent } = 
 }
 
 const api = {
-  start: ({ sessionId, message, model, reasoningEffort, workbookBinding, signal, onEvent }) =>
+  start: ({ sessionId, message, attachments: images, model, reasoningEffort, workbookBinding, signal, onEvent }) =>
     requestStream("/api/sessions", {
       method: "POST",
-      body: { sessionId, message, model, reasoningEffort, workbookBinding },
+      body: { sessionId, message, attachments: images, model, reasoningEffort, workbookBinding },
       signal,
       onEvent,
     }),
-  addMessage: ({ sessionId, message, model, reasoningEffort, workbookBinding, signal, onEvent }) =>
+  addMessage: ({ sessionId, message, attachments: images, model, reasoningEffort, workbookBinding, signal, onEvent }) =>
     requestStream(`/api/sessions/${encodeURIComponent(sessionId)}/messages`, {
       method: "POST",
-      body: { message, model, reasoningEffort, workbookBinding },
+      body: { message, attachments: images, model, reasoningEffort, workbookBinding },
       signal,
       onEvent,
     }),
@@ -583,8 +604,8 @@ async function restoreConversationRecovery() {
   }
 }
 
-function appendMessage(role, text) {
-  history.addMessage(role, text || "模型未返回文本。");
+function appendMessage(role, text, messageAttachments = []) {
+  history.addMessage(role, text || "模型未返回文本。", { attachments: messageAttachments });
   renderConversation();
 }
 
@@ -640,11 +661,54 @@ function finishAssistantMessage(text) {
   appendMessage("assistant", text);
 }
 
+function openImagePreview(attachment, trigger) {
+  if (typeof attachment?.dataUrl !== "string" || attachment.dataUrl === "") return;
+  closeMenus();
+  imagePreviewTrigger = trigger ?? document.activeElement;
+  elements.imagePreviewImage.src = attachment.dataUrl;
+  elements.imagePreviewImage.alt = attachment.name || "图片预览";
+  elements.imagePreviewModal.hidden = false;
+  elements.imagePreviewClose.focus();
+}
+
+function closeImagePreview() {
+  if (elements.imagePreviewModal.hidden) return;
+  elements.imagePreviewModal.hidden = true;
+  elements.imagePreviewImage.removeAttribute("src");
+  elements.imagePreviewImage.alt = "";
+  const trigger = imagePreviewTrigger;
+  imagePreviewTrigger = null;
+  if (typeof trigger?.focus === "function" && trigger.isConnected !== false) trigger.focus();
+}
+
+function createImagePreviewButton(attachment, className) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = className;
+  button.title = `放大查看 ${attachment.name || "图片"}`;
+  button.setAttribute("aria-label", button.title);
+  const image = document.createElement("img");
+  image.src = attachment.dataUrl;
+  image.alt = attachment.name || "消息图片";
+  button.append(image);
+  button.addEventListener("click", () => openImagePreview(attachment, button));
+  return button;
+}
+
 function createConversationMessage(entry, { actionStep = false } = {}) {
   const message = document.createElement("div");
   message.className = `message ${entry.role}`;
   if (actionStep) message.classList.add("action-flow-step");
   if (entry.id === streamingAssistantId) message.classList.add("is-streaming");
+  if (Array.isArray(entry.attachments) && entry.attachments.length > 0) {
+    const images = document.createElement("div");
+    images.className = "message-images";
+    for (const attachment of entry.attachments) {
+      if (typeof attachment?.dataUrl !== "string" || attachment.dataUrl === "") continue;
+      images.append(createImagePreviewButton(attachment, "message-image-button"));
+    }
+    if (images.childElementCount > 0) message.append(images);
+  }
   const copy = document.createElement("div");
   copy.textContent = entry.text;
   message.append(copy);
@@ -1141,34 +1205,21 @@ function modelDisplayName(modelId) {
   return value;
 }
 
-function reasoningEffortDisplayName(effort) {
-  const value = String(effort ?? "").trim().toLowerCase();
-  if (!value) return "自动";
-  if (value === "none" || value === "off" || value === "disabled") return "关闭";
-  if (value === "low" || value === "minimal" || value === "min") return "低";
-  if (value === "medium" || value === "med" || value === "balanced") return "中";
-  if (value === "high") return "高";
-  if (value === "xhigh" || value === "max" || value === "ultra") return "极高";
-  return String(effort);
+function defaultReasoningEffortForModel(modelId) {
+  return reconcileReasoningEffortForModel(modelId, undefined);
 }
 
-function defaultReasoningEffortForModel(modelId) {
-  const entry = modelEntry(modelId);
-  if (!entry) return null;
-  if (entry.defaultReasoningEffort && entry.reasoningEfforts.includes(entry.defaultReasoningEffort)) {
-    return entry.defaultReasoningEffort;
-  }
-  const configuredEffort = configState?.config?.reasoningEffort;
-  if (modelId === configState?.config?.model && configuredEffort) {
-    return entry.reasoningEfforts.includes(configuredEffort)
-      ? configuredEffort
-      : null;
-  }
-  return entry.reasoningEfforts[0] ?? null;
+function reconcileReasoningEffortForModel(modelId, selectedEffort) {
+  return reconcileReasoningEffort({
+    model: modelEntry(modelId),
+    selectedEffort,
+    configuredModelId: configState?.config?.model,
+    configuredEffort: configState?.config?.reasoningEffort,
+  });
 }
 
 function availableReasoningEfforts() {
-  return modelEntry(selectedModel)?.reasoningEfforts ?? configState?.config?.reasoningEfforts ?? [];
+  return reasoningEffortMenuValues(modelEntry(selectedModel));
 }
 
 function renderModelMenu() {
@@ -1184,17 +1235,21 @@ function renderModelMenu() {
     const name = document.createElement("strong");
     name.textContent = modelDisplayName(model.id);
     const detail = document.createElement("small");
+    const menuValues = reasoningEffortMenuValues(model);
+    const compatibilitySuffix = model.reasoningEfforts.length === 0 && model.compatibleReasoningEfforts.length > 0
+      ? "（兼容）"
+      : "";
+    const effortSummary = menuValues.length > 0
+      ? `${menuValues.length} 个推理选项${compatibilitySuffix}`
+      : "提供方默认";
     detail.textContent = model.id === modelDisplayName(model.id)
-      ? `${model.reasoningEfforts.length} 个推理强度`
-      : `${model.id} · ${model.reasoningEfforts.length} 个推理强度`;
+      ? effortSummary
+      : `${model.id} · ${effortSummary}`;
     copy.append(name, detail);
     option.append(copy);
     option.addEventListener("click", () => {
       selectedModel = model.id;
-      const efforts = model.reasoningEfforts;
-      selectedReasoningEffort = efforts.includes(selectedReasoningEffort)
-        ? selectedReasoningEffort
-        : efforts[0] ?? null;
+      selectedReasoningEffort = reconcileReasoningEffortForModel(selectedModel, selectedReasoningEffort);
       updateComposerControls();
       closeMenus();
     });
@@ -1204,6 +1259,8 @@ function renderModelMenu() {
 
 function renderEffortMenu() {
   elements.effortMenu.replaceChildren();
+  const model = modelEntry(selectedModel);
+  const hasCompatibleEfforts = model?.reasoningEfforts.length === 0 && model.compatibleReasoningEfforts.length > 0;
   for (const effort of availableReasoningEfforts()) {
     const option = document.createElement("button");
     option.type = "button";
@@ -1214,9 +1271,22 @@ function renderEffortMenu() {
     option.append(createIcon("/assets/fluent/brain.svg"));
     const label = document.createElement("strong");
     label.textContent = reasoningEffortDisplayName(effort);
-    option.setAttribute("aria-label", `推理强度：${label.textContent}`);
+    const description = effort === null
+      ? "提供方默认"
+      : hasCompatibleEfforts
+        ? "兼容档位"
+        : null;
+    option.setAttribute(
+      "aria-label",
+      `推理强度：${label.textContent}${effort === null ? "" : `（${effort}）`}${description ? `，${description}` : ""}`,
+    );
     const copy = document.createElement("span");
     copy.append(label);
+    if (description) {
+      const detail = document.createElement("small");
+      detail.textContent = description;
+      copy.append(detail);
+    }
     option.append(copy);
     option.addEventListener("click", () => {
       selectedReasoningEffort = effort;
@@ -1225,16 +1295,6 @@ function renderEffortMenu() {
     });
     elements.effortMenu.append(option);
   }
-}
-
-function reasoningEffortLevel(effort) {
-  const value = String(effort ?? "").trim().toLowerCase();
-  if (!value || /^(none|off|disabled|default|auto)$/.test(value)) return "0";
-  if (/(xhigh|ultra|max|very[-_ ]?high)/.test(value)) return "4";
-  if (/(high|large)/.test(value)) return "3";
-  if (/(medium|med|balanced)/.test(value)) return "2";
-  if (/(low|min|minimal|small)/.test(value)) return "1";
-  return "2";
 }
 
 function compactTokenCount(value) {
@@ -1332,33 +1392,56 @@ function resetModelSettings() {
   closeMenus();
 }
 
+function modelFromPublicConfig(config = {}) {
+  return normalizeReasoningModel({
+    id: config.model,
+    reasoningEfforts: config.reasoningEfforts,
+    compatibleReasoningEfforts: config.compatibleReasoningEfforts,
+    reasoningMode: config.reasoningMode ?? "levels",
+    reasoningSource: config.reasoningSource ?? "inferred",
+    defaultReasoningEffort: config.defaultReasoningEffort ?? null,
+    contextWindow: config.contextWindow,
+    contextSource: config.contextSource ?? null,
+  });
+}
+
 function normalizeConfigState(payload) {
-  const models = Array.isArray(payload.models) ? payload.models.map((model) => ({ ...model })) : [];
-  if (payload.config?.model && !models.some((model) => model.id === payload.config.model)) {
-    models.unshift({
-      id: payload.config.model,
-      reasoningEfforts: payload.config.reasoningEfforts ?? [payload.config.reasoningEffort ?? "none"],
-      reasoningMode: payload.config.reasoningMode ?? "levels",
-      reasoningSource: payload.config.reasoningSource ?? "inferred",
-      defaultReasoningEffort: payload.config.defaultReasoningEffort ?? payload.config.reasoningEffort ?? null,
-      contextWindow: payload.config.contextWindow,
-      contextSource: payload.config.contextSource ?? null,
-    });
+  const config = payload.config ?? {};
+  const models = Array.isArray(payload.models) ? payload.models.map(normalizeReasoningModel) : [];
+  if (config.model && !models.some((model) => model.id === config.model)) {
+    models.unshift(modelFromPublicConfig(config));
   }
+  const settings = payload.settings ?? {
+    useSystemConfig: true,
+    model: config.model,
+    contextWindow: config.contextWindow,
+    reasoningEffort: config.reasoningEffort,
+    maxSteps: 100,
+    approvalMode: "required",
+  };
   return {
     source: payload.source ?? "system",
-    config: payload.config,
+    config,
     models,
     protocols: Array.isArray(payload.protocols) ? payload.protocols.map((protocol) => ({ ...protocol })) : [],
-    settings: payload.settings ?? {
-      useSystemConfig: true,
-      model: payload.config?.model,
-      contextWindow: payload.config?.contextWindow,
-      reasoningEffort: payload.config?.reasoningEffort,
-      maxSteps: 100,
-      approvalMode: "required",
+    settings: {
+      ...settings,
+      models: Array.isArray(settings.models) ? settings.models.map(normalizeReasoningModel) : [],
     },
   };
+}
+
+function replaceConversationModels(models) {
+  const previousModel = selectedModel;
+  const previousEffort = selectedReasoningEffort;
+  configState.models = Array.isArray(models) ? models.map(normalizeReasoningModel) : [];
+  if (configState.config.model && !configState.models.some((model) => model.id === configState.config.model)) {
+    configState.models.unshift(modelFromPublicConfig(configState.config));
+  }
+  selectedModel = configState.models.some((model) => model.id === previousModel)
+    ? previousModel
+    : configState.config.model ?? configState.models[0]?.id ?? null;
+  selectedReasoningEffort = reconcileReasoningEffortForModel(selectedModel, previousEffort);
 }
 
 function applyConfigState(payload, { preserveSelection = true } = {}) {
@@ -1367,13 +1450,11 @@ function applyConfigState(payload, { preserveSelection = true } = {}) {
   configState = normalizeConfigState(payload);
   selectedModel = preserveSelection && configState.models.some((model) => model.id === previousModel)
     ? previousModel
-    : configState.config.model;
-  const efforts = modelEntry(selectedModel)?.reasoningEfforts ?? [];
-  selectedReasoningEffort = preserveSelection && efforts.includes(previousEffort)
-    ? previousEffort
-    : efforts.includes(configState.config.reasoningEffort)
-      ? configState.config.reasoningEffort
-      : efforts[0] ?? null;
+    : configState.config.model ?? configState.models[0]?.id ?? null;
+  selectedReasoningEffort = reconcileReasoningEffortForModel(
+    selectedModel,
+    preserveSelection ? previousEffort : undefined,
+  );
   elements.statusDot.className = "status-dot is-ready";
   configStatusTitle = `${configState.config.providerName} · ${configState.config.model}\n${configState.config.endpoint}`;
   updateWorkbookStatusTitle();
@@ -1458,8 +1539,90 @@ async function persistApprovalMode(mode) {
   }
 }
 
+function showAttachmentError(message) {
+  const visible = typeof message === "string" && message.trim() !== "";
+  elements.attachmentError.textContent = visible ? message : "";
+  elements.attachmentError.hidden = !visible;
+}
+
+function renderAttachments() {
+  elements.attachmentList.replaceChildren();
+  for (const attachment of attachments) {
+    const item = document.createElement("div");
+    item.className = "attachment-item";
+    item.title = `${attachment.name} · ${formatAttachmentSize(attachment.byteLength)}`;
+    const preview = createImagePreviewButton(attachment, "attachment-preview");
+    preview.title = `${item.title}，点击放大查看`;
+    preview.setAttribute("aria-label", preview.title);
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "attachment-remove";
+    remove.title = `删除 ${attachment.name}`;
+    remove.setAttribute("aria-label", remove.title);
+    remove.append(createIcon("/assets/fluent/dismiss.svg"));
+    remove.addEventListener("click", () => {
+      attachments = attachments.filter((candidate) => candidate.id !== attachment.id);
+      renderAttachments();
+      updateSendState();
+    });
+    item.append(preview, remove);
+    elements.attachmentList.append(item);
+  }
+  elements.attachmentList.hidden = attachments.length === 0;
+  elements.attachmentList.inert = uiBusy;
+}
+
+async function addSelectedImages(fileList) {
+  const files = Array.from(fileList ?? []);
+  if (files.length === 0) return;
+  showAttachmentError("");
+  if (attachments.length + files.length > MAX_ATTACHMENTS) {
+    showAttachmentError(`每条消息最多添加 ${MAX_ATTACHMENTS} 张图片。`);
+    return;
+  }
+
+  try {
+    const prepared = [];
+    for (const file of files) prepared.push(await prepareImageFile(file));
+    attachments = [...attachments, ...prepared];
+    renderAttachments();
+    updateSendState();
+  } catch (error) {
+    showAttachmentError(
+      error instanceof AttachmentError || error instanceof Error
+        ? error.message
+        : "无法添加图片。",
+    );
+  }
+}
+
+function clipboardContainsUnsupportedImage(clipboardData) {
+  const itemTypes = [
+    ...Array.from(clipboardData?.files ?? []).map((file) => file?.type),
+    ...Array.from(clipboardData?.items ?? []).map((item) => item?.type),
+  ];
+  return itemTypes.some((type) => /^image\//i.test(String(type ?? "")) && !/^image\/(?:png|jpeg|webp)$/i.test(String(type)));
+}
+
+function insertClipboardText(text) {
+  if (typeof text !== "string" || text === "") return;
+  const input = elements.promptInput;
+  const value = input.value;
+  const start = Number.isInteger(input.selectionStart) ? input.selectionStart : value.length;
+  const end = Number.isInteger(input.selectionEnd) ? input.selectionEnd : start;
+  const nextValue = `${value.slice(0, start)}${text}${value.slice(end)}`;
+  if (nextValue.length > Number(input.maxLength)) {
+    input.value = nextValue.slice(0, Number(input.maxLength));
+  } else {
+    input.value = nextValue;
+  }
+  const nextCursor = Math.min(start + text.length, input.value.length);
+  input.setSelectionRange?.(nextCursor, nextCursor);
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
 function updateSendState() {
-  const hasContent = elements.promptInput.value.trim() !== "";
+  const hasContent = elements.promptInput.value.trim() !== "" || attachments.length > 0;
   const busy = uiBusy;
   elements.sendButton.disabled = busy ? false : approvalModeSaving || !configState || !hasContent;
   elements.sendButton.classList.toggle("is-busy", busy);
@@ -1481,6 +1644,7 @@ function setBusy(busy) {
   elements.effortButton.disabled = busy || availableReasoningEfforts().length === 0;
   elements.modeButton.disabled = busy || approvalModeSaving || !configState;
   elements.settingsButton.disabled = busy;
+  elements.attachmentList.inert = busy;
   for (const row of activityRows.values()) row.disabled = busy;
   if (!busy) elements.runStatus.textContent = "";
   updateSendState();
@@ -1576,13 +1740,13 @@ function requestLegacy(body) {
 function handleRunnerEvent(event) {
   switch (event.type) {
     case "run_started":
-      currentOperationId = history.startOperation({ label: event.message || "分析工作簿" }).id;
+      currentOperationId = history.startOperation({ label: event.message || "分析图片" }).id;
       currentRunOutcome = "success";
       streamingAssistantId = null;
       streamingAssistantStepTextLength = 0;
       ensureActivityGroup(currentOperationId);
       elements.activityEmpty.hidden = true;
-      appendMessage("user", event.message || "分析工作簿");
+      appendMessage("user", event.message || "已发送图片", event.attachments);
       elements.runStatus.textContent = "";
       setBusy(true);
       startRecoveryHeartbeat();
@@ -1754,10 +1918,14 @@ async function clearRecoverySession() {
 
 async function submitPrompt() {
   const message = elements.promptInput.value.trim();
-  if (message === "" || runner.running || approvalModeSaving || !configState) return;
+  if ((message === "" && attachments.length === 0) || runner.running || approvalModeSaving || !configState) return;
   if (!(await guardHistoricalConversation())) return;
 
+  const outgoingAttachments = attachments.map(({ name, mimeType, dataUrl }) => ({ name, mimeType, dataUrl }));
   elements.promptInput.value = "";
+  attachments = [];
+  showAttachmentError("");
+  renderAttachments();
   resizePromptInput();
   updateSendState();
   try {
@@ -1774,6 +1942,7 @@ async function submitPrompt() {
     }
     if (!runner.sessionId) sessionWorkbookBinding = workbookBinding;
     await runner.run(message, {
+      attachments: outgoingAttachments,
       model: selectedModel,
       reasoningEffort: selectedReasoningEffort,
       workbookBinding: workbookBinding ?? undefined,
@@ -1781,6 +1950,8 @@ async function submitPrompt() {
   } catch (error) {
     if (!runner.running) {
       elements.promptInput.value = message;
+      attachments = outgoingAttachments;
+      renderAttachments();
       resizePromptInput();
       updateSendState();
       if (runner.sessionId) startRecoveryHeartbeat();
@@ -1842,7 +2013,10 @@ function renderSettingsEfforts() {
     elements.mappingNote.textContent = "";
     return;
   }
-  if (entry.reasoningMode === "provider-default") {
+  const usesAutomaticDefault = entry.reasoningMode === "provider-default"
+    || entry.reasoningMode === "thinking-toggle"
+    || entry.reasoningEfforts.length === 0;
+  if (usesAutomaticDefault) {
     const option = document.createElement("option");
     option.value = "";
     option.textContent = "自动（提供方默认）";
@@ -1851,7 +2025,7 @@ function renderSettingsEfforts() {
     for (const effort of entry.reasoningEfforts) {
       const option = document.createElement("option");
       option.value = effort;
-      option.textContent = effort;
+      option.textContent = `${reasoningEffortDisplayName(effort)}（${effort}）`;
       elements.settingsEffort.append(option);
     }
   }
@@ -1862,13 +2036,17 @@ function renderSettingsEfforts() {
       ? "上下文长度来自官方模型目录。"
       : "上下文长度来自提供方模型元数据。"
     : "";
-  const reasoningNote = entry.reasoningMode === "provider-default"
-    ? "支持思考模式，等级由提供方自动决定。"
-    : entry.reasoningSource === "official"
-      ? "思考等级来自官方模型目录，不能手动修改。"
-      : entry.reasoningSource === "provider"
-        ? "思考等级来自提供方模型元数据，不能手动修改。"
-        : "当前按模型 ID 保守映射，不能手动修改。";
+  const reasoningNote = entry.reasoningSource === "compatibility"
+    ? "模型接口未声明思考等级，默认使用提供方自动模式。"
+    : entry.reasoningMode === "thinking-toggle"
+      ? "官方仅声明自动思考与关闭开关，设置默认保持自动。"
+      : entry.reasoningMode === "provider-default"
+        ? "支持思考模式，等级由提供方自动决定。"
+        : entry.reasoningSource === "official"
+          ? "思考等级来自官方模型目录，不能手动修改。"
+          : entry.reasoningSource === "provider"
+            ? "思考等级来自提供方模型元数据，不能手动修改。"
+            : "当前按模型 ID 保守映射，不能手动修改。";
   elements.mappingNote.textContent = [contextNote, reasoningNote].filter(Boolean).join(" ");
 }
 
@@ -1923,7 +2101,7 @@ function populateSettings() {
   elements.contextWindow.value = String(configState.settings.contextWindow ?? 200000);
   elements.maxSteps.value = String(configState.settings.maxSteps ?? 100);
   settingsDiscoveredModels = Array.isArray(configState.settings.models)
-    ? configState.settings.models.map((model) => ({ ...model }))
+    ? configState.settings.models.map(normalizeReasoningModel)
     : [];
   renderSettingsModels(configState.settings.model);
   toggleCustomSettings();
@@ -1969,22 +2147,11 @@ async function discoverModels(useSystemConfig) {
           }),
     });
     if (useSystemConfig) {
-      configState.models = result.models;
-      if (!configState.models.some((model) => model.id === configState.config.model)) {
-        configState.models.unshift({
-          id: configState.config.model,
-          reasoningEfforts: configState.config.reasoningEfforts,
-          reasoningMode: configState.config.reasoningMode,
-          reasoningSource: configState.config.reasoningSource,
-          defaultReasoningEffort: configState.config.defaultReasoningEffort,
-          contextWindow: configState.config.contextWindow,
-          contextSource: configState.config.contextSource,
-        });
-      }
+      replaceConversationModels(result.models);
       updateComposerControls();
       setSettingsMessage(`已获取 ${result.models.length} 个模型，可在对话框底部切换。`, "success");
     } else {
-      settingsDiscoveredModels = result.models;
+      settingsDiscoveredModels = result.models.map(normalizeReasoningModel);
       renderSettingsModels(configState.settings.model);
       applySettingsModelContextWindow();
       setSettingsMessage(`已获取 ${result.models.length} 个模型。`, "success");
@@ -2191,6 +2358,22 @@ elements.promptInput.addEventListener("input", () => {
   resizePromptInput();
   updateSendState();
 });
+elements.promptInput.addEventListener("paste", (event) => {
+  const clipboardData = event.clipboardData;
+  const files = clipboardImageFiles(clipboardData);
+  const hasUnsupportedImage = clipboardContainsUnsupportedImage(clipboardData);
+  if (files.length === 0) {
+    if (hasUnsupportedImage) showAttachmentError("只支持 PNG、JPEG 或 WebP 图片。");
+    return;
+  }
+
+  event.preventDefault();
+  insertClipboardText(clipboardData?.getData?.("text/plain") ?? "");
+  if (hasUnsupportedImage) {
+    showAttachmentError("部分图片格式不受支持，仅保留 PNG、JPEG 或 WebP 图片。");
+  }
+  void addSelectedImages(files);
+});
 elements.promptInput.addEventListener("keydown", (event) => {
   if (event.key === "Enter" && !event.shiftKey) {
     event.preventDefault();
@@ -2243,12 +2426,19 @@ elements.settingsModel.addEventListener("change", () => {
 elements.settingsForm.addEventListener("submit", saveSettings);
 elements.confirmCancelButton.addEventListener("click", () => resolveConfirmation(false));
 elements.confirmAcceptButton.addEventListener("click", () => resolveConfirmation(true));
+elements.imagePreviewClose.addEventListener("click", closeImagePreview);
+elements.imagePreviewModal.addEventListener("click", (event) => {
+  if (event.target === elements.imagePreviewModal) closeImagePreview();
+});
 document.addEventListener("click", (event) => {
   if (!event.target.closest(".menu-anchor")) closeMenus();
 });
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
-    if (pendingConfirmation) resolveConfirmation(false);
+    if (!elements.imagePreviewModal.hidden) {
+      event.preventDefault();
+      closeImagePreview();
+    } else if (pendingConfirmation) resolveConfirmation(false);
     else closeMenus();
   }
 });
@@ -2256,6 +2446,7 @@ globalThis.addEventListener?.("pagehide", stopRecoveryHeartbeat);
 
 setApprovalMode("required");
 resizePromptInput();
+renderAttachments();
 renderConversation();
 updateSendState();
 

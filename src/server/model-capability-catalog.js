@@ -11,6 +11,17 @@ const PROVIDER_DEFAULT_EFFORTS = Object.freeze([]);
 const NO_REASONING_EFFORTS = Object.freeze(["none"]);
 const DEEPSEEK_V4_FLASH_EFFORTS = Object.freeze(["none", "low", "high", "max"]);
 const DEEPSEEK_V4_PRO_EFFORTS = Object.freeze(["none", "high", "max"]);
+const QWEN3_7_MAX_CHAT_EFFORTS = Object.freeze(["none"]);
+const QWEN3_7_MAX_RESPONSES_EFFORTS = Object.freeze(["none", "minimal", "low", "medium", "high"]);
+const QWEN3_7_MAX_IDS = Object.freeze([
+  "qwen3.7-max",
+  "qwen3.7-max-2026-05-20",
+  "qwen3.7-max-2026-06-08",
+]);
+const QWEN3_7_MAX_REFERENCES = Object.freeze([
+  "https://help.aliyun.com/zh/model-studio/qwen3-7-max.md",
+  "https://help.aliyun.com/zh/model-studio/deep-thinking.md",
+]);
 
 function exactModelIds(modelIds) {
   const ids = new Set(modelIds);
@@ -50,19 +61,22 @@ const OFFICIAL_CAPABILITIES = Object.freeze([
   }),
   Object.freeze({
     protocols: Object.freeze(["openai-chat-completions"]),
-    matches: exactModelIds([
-      "qwen3.7-max",
-      "qwen3.7-max-2026-05-20",
-      "qwen3.7-max-2026-06-08",
-    ]),
+    matches: exactModelIds(QWEN3_7_MAX_IDS),
     contextWindow: 1_000_000,
-    reasoningMode: "provider-default",
-    reasoningEfforts: PROVIDER_DEFAULT_EFFORTS,
+    reasoningMode: "thinking-toggle",
+    reasoningEfforts: QWEN3_7_MAX_CHAT_EFFORTS,
     defaultReasoningEffort: null,
-    references: Object.freeze([
-      "https://help.aliyun.com/zh/model-studio/qwen3-7-max.md",
-      "https://help.aliyun.com/zh/model-studio/deep-thinking.md",
-    ]),
+    thinkingToggle: true,
+    references: QWEN3_7_MAX_REFERENCES,
+  }),
+  Object.freeze({
+    protocols: Object.freeze(["openai-responses"]),
+    matches: exactModelIds(QWEN3_7_MAX_IDS),
+    contextWindow: 1_000_000,
+    reasoningMode: "levels",
+    reasoningEfforts: QWEN3_7_MAX_RESPONSES_EFFORTS,
+    defaultReasoningEffort: "medium",
+    references: QWEN3_7_MAX_REFERENCES,
   }),
   Object.freeze({
     protocols: Object.freeze(["openai-responses", "openai-chat-completions"]),

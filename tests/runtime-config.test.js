@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  inferReasoningEfforts,
   parseModelCatalog,
   RuntimeConfigError,
   RuntimeConfigStore,
@@ -44,21 +43,19 @@ function memorySettingsStore(initial = {}) {
   };
 }
 
-test("解析提供方思考等级并为缺失元数据的模型推断", () => {
+test("保留提供方已声明思考等级，不将兼容档位混入已证实能力", () => {
   const models = parseModelCatalog({
     data: [
       { id: "gpt-5-declared", supported_reasoning_efforts: ["low", "high"] },
-      { id: "plain-chat" },
     ],
   });
 
   assert.deepEqual(models[0].reasoningEfforts, ["low", "high"]);
   assert.equal(models[0].reasoningSource, "provider");
-  assert.deepEqual(models[1].reasoningEfforts, ["none"]);
-  assert.equal(inferReasoningEfforts("gpt-5-test").includes("max"), true);
+  assert.deepEqual(models[0].compatibleReasoningEfforts, []);
 });
 
-test("官方目录优先补全 Qwen3.7 Max，且不伪造思考等级", () => {
+test("官方目录为 Qwen3.7 Max Chat Completions 提供自动和关闭开关", () => {
   const [model] = parseModelCatalog({
     data: [{
       id: "qwen3.7-max",
@@ -70,14 +67,40 @@ test("官方目录优先补全 Qwen3.7 Max，且不伪造思考等级", () => {
   assert.equal(model.contextWindow, 1_000_000);
   assert.equal(model.contextSource, "official");
   assert.equal(model.reasoningSource, "official");
-  assert.equal(model.reasoningMode, "provider-default");
-  assert.deepEqual(model.reasoningEfforts, []);
+  assert.equal(model.reasoningMode, "thinking-toggle");
+  assert.deepEqual(model.reasoningEfforts, ["none"]);
+  assert.deepEqual(model.compatibleReasoningEfforts, []);
   assert.equal(model.defaultReasoningEffort, null);
+  assert.equal(model.thinkingToggle, true);
   assert.equal(model.capabilityReference, "https://help.aliyun.com/zh/model-studio/qwen3-7-max.md");
   assert.deepEqual(model.capabilityReferences, [
     "https://help.aliyun.com/zh/model-studio/qwen3-7-max.md",
     "https://help.aliyun.com/zh/model-studio/deep-thinking.md",
   ]);
+});
+
+test("官方目录为 Qwen3.7 Max Responses 提供公布的思考等级", () => {
+  const [model] = parseModelCatalog({ data: [{ id: "qwen3.7-max" }] }, "openai-responses");
+
+  assert.equal(model.contextWindow, 1_000_000);
+  assert.equal(model.contextSource, "official");
+  assert.equal(model.reasoningSource, "official");
+  assert.equal(model.reasoningMode, "levels");
+  assert.deepEqual(model.reasoningEfforts, ["none", "minimal", "low", "medium", "high"]);
+  assert.deepEqual(model.compatibleReasoningEfforts, []);
+  assert.equal(model.defaultReasoningEffort, "medium");
+  assert.equal(model.thinkingToggle, undefined);
+});
+
+test("未知 OpenAI 模型仅返回 ID 时使用独立兼容档位", () => {
+  for (const protocol of ["openai-responses", "openai-chat-completions"]) {
+    const [model] = parseModelCatalog({ data: [{ id: "gateway-unknown" }] }, protocol);
+
+    assert.deepEqual(model.reasoningEfforts, [], protocol);
+    assert.deepEqual(model.compatibleReasoningEfforts, ["low", "medium", "high"], protocol);
+    assert.equal(model.defaultReasoningEffort, null, protocol);
+    assert.notEqual(model.reasoningSource, "inferred", protocol);
+  }
 });
 
 test("官方目录补全 DeepSeek V4 的上下文和实际思考档位", () => {
@@ -116,7 +139,7 @@ test("官方目录只匹配已核验的模型 ID", () => {
   const byId = new Map(models.map((model) => [model.id, model]));
 
   assert.equal(byId.get("qwen3.7-max-2026-05-20").contextSource, "official");
-  assert.equal(byId.get("qwen3.7-max-2026-05-20").reasoningMode, "provider-default");
+  assert.equal(byId.get("qwen3.7-max-2026-05-20").reasoningMode, "thinking-toggle");
   assert.equal(byId.get("qwen3.7-max-preview").contextSource, undefined);
   assert.equal(byId.get("qwen3.7-max-2026-05-17").contextSource, undefined);
   assert.equal(byId.get("gpt-5.4-mini").contextSource, undefined);
@@ -150,7 +173,7 @@ test("DeepSeek V4 Flash 的默认值和会话级思考选择都由官方目录�
   );
 });
 
-test("未知模型保留提供方元数据，缺失时才使用保守推断", () => {
+test("未知模型保留提供方元数据，缺失时才公开兼容档位", () => {
   const models = parseModelCatalog({
     data: [
       { id: "gateway-model", context_window: 32000, reasoning_efforts: ["low", "high"] },
@@ -162,8 +185,99 @@ test("未知模型保留提供方元数据，缺失时才使用保守推断", ()
   assert.equal(models[0].contextSource, "provider");
   assert.deepEqual(models[0].reasoningEfforts, ["low", "high"]);
   assert.equal(models[0].reasoningSource, "provider");
+  assert.deepEqual(models[0].compatibleReasoningEfforts, []);
   assert.equal(models[1].contextWindow, undefined);
-  assert.equal(models[1].reasoningSource, "inferred");
+  assert.deepEqual(models[1].reasoningEfforts, []);
+  assert.deepEqual(models[1].compatibleReasoningEfforts, ["low", "medium", "high"]);
+  assert.notEqual(models[1].reasoningSource, "inferred");
+});
+
+function unknownOpenAiStore(protocol = "openai-responses") {
+  return new RuntimeConfigStore({
+    systemLoader: async () => ({
+      ...systemConfig(),
+      model: "gateway-unknown",
+      protocol,
+      endpoint: protocol === "openai-responses"
+        ? "https://provider.example/v1/responses"
+        : "https://provider.example/v1/chat/completions",
+      reasoningEffort: "high",
+    }),
+    fetchImpl: async () => { throw new Error("not used"); },
+    settingsStore: memorySettingsStore(),
+  });
+}
+
+test("未知 OpenAI 模型默认自动，并公开兼容档位而非模型默认能力", async () => {
+  const store = unknownOpenAiStore();
+  const state = await store.getPublicState();
+
+  assert.equal(state.config.reasoningEffort, null);
+  assert.deepEqual(state.config.reasoningEfforts, []);
+  assert.deepEqual(state.config.compatibleReasoningEfforts, ["low", "medium", "high"]);
+  assert.equal(state.models[0].defaultReasoningEffort, null);
+});
+
+test("未知 OpenAI 模型仅接受兼容集合内的会话级思考选择", async () => {
+  const store = unknownOpenAiStore();
+
+  for (const effort of ["low", "high"]) {
+    assert.equal((await store.loadConfig({ reasoningEffort: effort })).reasoningEffort, effort);
+  }
+  for (const effort of ["none", "minimal", "xhigh", "max"]) {
+    await assert.rejects(
+      () => store.loadConfig({ reasoningEffort: effort }),
+      (error) => error instanceof RuntimeConfigError && error.code === "REASONING_EFFORT_UNSUPPORTED",
+    );
+  }
+});
+
+test("Qwen3.7 Max Chat Completions 仅接受官方关闭选择", async () => {
+  const store = new RuntimeConfigStore({
+    systemLoader: async () => ({
+      ...systemConfig(),
+      model: "qwen3.7-max",
+      protocol: "openai-chat-completions",
+      endpoint: "https://provider.example/v1/chat/completions",
+      reasoningEffort: "high",
+    }),
+    fetchImpl: async () => { throw new Error("not used"); },
+    settingsStore: memorySettingsStore(),
+  });
+
+  const state = await store.getPublicState();
+  assert.equal(state.config.thinkingToggle, true);
+  assert.equal((await store.loadConfig()).reasoningEffort, null);
+  assert.equal((await store.loadConfig({ reasoningEffort: "none" })).reasoningEffort, "none");
+  await assert.rejects(
+    () => store.loadConfig({ reasoningEffort: "low" }),
+    (error) => error instanceof RuntimeConfigError && error.code === "REASONING_EFFORT_UNSUPPORTED",
+  );
+});
+
+test("Qwen3.7 Max Responses 使用官方等级和中等默认值", async () => {
+  const store = new RuntimeConfigStore({
+    systemLoader: async () => ({
+      ...systemConfig(),
+      model: "qwen3.7-max",
+      protocol: "openai-responses",
+      endpoint: "https://provider.example/v1/responses",
+      reasoningEffort: null,
+    }),
+    fetchImpl: async () => { throw new Error("not used"); },
+    settingsStore: memorySettingsStore(),
+  });
+
+  assert.equal((await store.loadConfig()).reasoningEffort, "medium");
+  for (const effort of ["none", "minimal", "low", "medium", "high"]) {
+    assert.equal((await store.loadConfig({ reasoningEffort: effort })).reasoningEffort, effort);
+  }
+  for (const effort of ["xhigh", "max"]) {
+    await assert.rejects(
+      () => store.loadConfig({ reasoningEffort: effort }),
+      (error) => error instanceof RuntimeConfigError && error.code === "REASONING_EFFORT_UNSUPPORTED",
+    );
+  }
 });
 
 test("系统状态脱敏且只暴露当前模型作为初始选择", async () => {
@@ -423,7 +537,7 @@ test("发现自定义模型后保存内存配置并校验消息级选择", async
     contextWindow: 128000,
     reasoningEffort: "high",
   });
-  const selected = await store.loadConfig({ model: "gpt-5-backup", reasoningEffort: "max" });
+  const selected = await store.loadConfig({ model: "gpt-5-backup", reasoningEffort: "high" });
 
   assert.equal(request.url, "https://custom.example/v1/models");
   assert.equal(request.authorization, "Bearer custom-secret");
@@ -431,7 +545,7 @@ test("发现自定义模型后保存内存配置并校验消息级选择", async
   assert.equal(state.settings.apiUrl, "https://custom.example");
   assert.equal(JSON.stringify(state).includes("custom-secret"), false);
   assert.equal(selected.model, "gpt-5-backup");
-  assert.equal(selected.reasoningEffort, "max");
+  assert.equal(selected.reasoningEffort, "high");
 });
 
 test("自定义保存忽略伪造思考等级，临时模型使用自己的上下文", async () => {
@@ -494,7 +608,7 @@ test("恢复历史 Qwen 配置时将思考等级规范为提供方自动模式",
   assert.equal(state.config.reasoningEffort, null);
   assert.equal(state.config.contextWindow, 500000);
   assert.equal(state.settings.contextWindow, 500000);
-  assert.equal(state.settings.models[0].reasoningMode, "provider-default");
+  assert.equal(state.settings.models[0].reasoningMode, "thinking-toggle");
 });
 
 test("未获取模型时拒绝保存自定义配置", async () => {

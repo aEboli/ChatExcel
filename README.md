@@ -1,141 +1,102 @@
 # ChatExcel
 
 <div align="center">
-  <img src="assets/icon-80.png" alt="ChatExcel" width="80" height="80" />
-  <h1>ChatExcel</h1>
-  <p><strong>A local-first AI copilot for Microsoft Excel</strong></p>
-  <p>Inspect the workbook, reason over the active sheet, and make controlled edits without leaving Excel.</p>
-  <p>
-    <a href="https://github.com/aEboli/ChatExcel/releases/tag/v0.0.2"><img src="https://img.shields.io/github/v/release/aEboli/ChatExcel?display_name=tag&sort=semver&label=release" alt="Release 0.0.2" /></a>
-    <a href="https://github.com/aEboli/ChatExcel"><img src="https://img.shields.io/github/stars/aEboli/ChatExcel?style=flat&label=stars" alt="GitHub stars" /></a>
-    <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.0.2-107c41" alt="Version 0.0.2" /></a>
-    <a href="README.zh-CN.md"><img src="https://img.shields.io/badge/中文-README-1967a6" alt="中文 README" /></a>
-  </p>
+
+[![Version](https://img.shields.io/badge/version-v0.0.2-107c41.svg)](https://github.com/aEboli/ChatExcel/releases/tag/v0.0.2)
+[![Node.js](https://img.shields.io/badge/Node.js-%3E%3D20-339933.svg)](https://nodejs.org/)
+[![Microsoft Excel](https://img.shields.io/badge/Microsoft-Excel-217346.svg)](https://www.microsoft.com/microsoft-365/excel)
+[![Windows](https://img.shields.io/badge/Windows-x64-0078d4.svg)](https://github.com/aEboli/ChatExcel/releases)
+[![中文说明](https://img.shields.io/badge/README-中文-1967a6.svg)](README.zh-CN.md)
+
+**A local-first AI workbook agent for Microsoft Excel**
+
+Inspect sheets, reason over workbook context, paste reference images, and perform controlled Excel edits from one compact task pane.
+
+Current release: `v0.0.2` · [`main`](https://github.com/aEboli/ChatExcel) contains the latest development updates
+
 </div>
+
+> The Chinese README is the primary, more detailed guide: [README.zh-CN.md](README.zh-CN.md). This English page is a concise project overview.
+
+## Current `main` updates
+
+- **Clipboard image input:** paste PNG, JPEG, or WebP images into the composer, inspect fixed-size thumbnails, remove them, or open an accessible full preview before sending. Image-only tasks are supported.
+- **Non-persistent image sessions:** attachments remain in page memory and use the existing multimodal provider adapters. Sessions containing images deliberately skip disk recovery so images never enter the encrypted recovery snapshot.
+- **Capability-safe model controls:** exact official model matches use verified context and reasoning metadata; unknown OpenAI-compatible models default to automatic mode and expose compatibility choices separately from verified capability claims.
+- **Protocol-specific reasoning:** ChatExcel preserves provider controls such as Qwen thinking toggles, DeepSeek V4 reasoning modes, and OpenAI reasoning levels without silently reusing an invalid selection after a model change.
+- **Stricter workbook mutations:** range-changing tools enforce a `5,000`-cell impact boundary and report `impact` plus read-back `verification` data.
+
+This development line is being published to GitHub `main`; `v0.0.2` remains the latest packaged release.
+
+## What ChatExcel does
+
+ChatExcel embeds a tool-using agent beside the active workbook. It can inspect ranges, write values and formulas, format cells, create tables or charts, and sort data through a narrow Excel tool surface. Read operations run automatically. Mutations either wait for explicit approval or run in the clearly selected no-approval mode.
+
+| Area | Current behavior |
+| --- | --- |
+| Workbook tools | Read, values, formulas, formats, number formats, autofit, clear, worksheets, tables, charts, and sort |
+| Agent loop | Streaming text, validated tool calls, structured tool errors, automatic correction, up to 1-1000 steps |
+| Providers | System WorkBuddy configuration or a custom OpenAI Responses, Chat Completions, Anthropic Messages, or Gemini endpoint |
+| Images | Up to 4 pasted PNG/JPEG/WebP attachments; thumbnails, delete, zoom, image-only send, protocol conversion |
+| History | Collapsible task-level activity, read-only visual previews, guarded continuation from historical context |
+| Recovery | One current-workbook session in a Windows-user DPAPI cache; image sessions are intentionally excluded |
+| Distribution | Source development flow plus a self-contained Windows x64 launcher for desktop Excel |
+
+## Interface
 
 <p align="center">
-  <img src="assets/screenshots/taskpane-400x900.png" alt="ChatExcel task pane preview" width="400" />
+  <img src="assets/screenshots/taskpane-400x900.png" alt="ChatExcel task pane" width="390" />
+  <img src="assets/screenshots/settings-400x900.png" alt="ChatExcel provider settings" width="390" />
 </p>
 
-<p align="center"><sub>Windows · Microsoft Excel desktop · local HTTPS · four streaming protocols</sub></p>
+The compact task pane keeps the workbook identity, conversation, grouped tool activity, model/reasoning controls, approval mode, and send/stop control visible without leaving Excel. It also includes a small local-only footer easter egg and respects `prefers-reduced-motion`.
 
-<div align="center">
+## How it works
 
-| Local-first | Auditable edits | Streaming | One-click launcher |
-| --- | --- | --- | --- |
-| Reuse the current Codex setup or use a local gateway | Read automatically, approve mutations explicitly | Responses, Chat Completions, Messages, Gemini | Self-contained Windows x64 distribution |
+```text
+Microsoft Excel task pane (Office.js)
+              │ same-origin HTTPS
+              ▼
+  127.0.0.1:3210 local companion
+              │ configuration + session loop + protocol adapter
+              ▼
+ WorkBuddy provider / custom API / local gateway
+```
 
-</div>
+- Office.js or the native `.xls` companion executes registered workbook tools.
+- The local Node.js service protects credentials, discovers models, converts the shared agent loop to the selected protocol, and streams events back to the task pane.
+- Text, compatible image input, tool calls, tool results, reasoning blocks, and usage metadata are translated for each protocol.
+- Complete tool arguments are validated before Excel is touched; unknown tools, invalid arguments, oversized ranges, missing approvals, and read-only workbooks fail closed.
 
-**Release:** [v0.0.2](https://github.com/aEboli/ChatExcel/releases/tag/v0.0.2) · [Changelog](CHANGELOG.md) · [中文说明](README.zh-CN.md)
+## Supported protocols
 
-## What It Solves
+Enter an API root such as `https://api.openai.com`; ChatExcel normalizes a pasted version or known method suffix while preserving gateway prefixes.
 
-Excel users often need to move between a model client and a workbook to inspect ranges, write formulas, format cells, or create charts. Cloud-only add-ins cannot read a local Codex setup, while a raw API chat cannot safely operate on the active workbook.
-
-ChatExcel places the agent beside the sheet and gives it a narrow, auditable Excel tool surface. Read operations can run automatically. Workbook mutations are either individually approved or explicitly announced before automatic execution, depending on the mode selected in the composer.
-
-## Why This Release
-
-`0.0.2` adds encrypted current-workbook crash recovery, supervised local-service recovery, correlated tool-error repair, read-only history previews, and a native companion path for existing `.xls` workbooks while keeping the original legacy file format under Excel's control.
-
-## Current `main` Development Line
-
-The current `main` branch builds on `v0.0.2` with a stricter workbook-mutation boundary:
-
-- Value, formula, format, number-format, clear, sort, table, and chart-source ranges are measured before execution; targets over `5,000` cells return a structured error without touching the workbook.
-- Autofit is limited by the requested row or column dimensions, and chart anchors accept only bounded cell or rectangular ranges.
-- Successful mutations return auditable `impact` and `verification` summaries; the Office.js and native `.xls` engines share the same error codes and result fields.
-- Agent instructions require read-before-write, formula-first results when calculable, and final inspection of verification summaries and formula errors; the `Needs approval` and `No approval` user modes remain unchanged.
-
-These changes are synchronized to GitHub `main` but are not a new release tag; `v0.0.2` remains the current formal release.
-
-## Core Workflow
-
-1. Open the ChatExcel task pane from the `ChatEx` ribbon group.
-2. Enter a workbook task.
-3. Select the model, reasoning level, context indicator, and approval mode at the bottom of the pane.
-4. ChatExcel sends only the current task context and registered Excel tool definitions to the selected provider.
-5. The pane groups all tool actions from one task above the conversation, reports the actual operation before its success or failure state, and appends assistant text as stream deltas arrive.
-6. If a model produces an invalid tool name, argument, or range, ChatExcel rejects that call without touching the workbook, returns a structured error to the model, and lets the agent correct itself.
-7. The agent continues through a local in-memory session until it finishes, is stopped, or reaches the configured step limit (100 by default).
-
-## Features
-
-- Workbook-aware label showing `file-name-sheet-name`.
-- Read, write, formula, formatting, number-format, autofit, clear, worksheet, table, chart, and sort tools.
-- Common A1 addresses including cells, rectangular ranges, absolute references, whole columns such as `N:R`, and whole rows such as `1:3`.
-- Unified impact protection runs before range mutations and reads back actual results afterward; `impact` and `verification` fields support auditing and follow-up repair.
-- Automatic recovery from correlated model tool errors across Responses, Chat Completions, Anthropic Messages, and Gemini.
-- Compact, collapsible activity history above the conversation.
-- One task-level activity group containing every tool step, collapsed by default with step-name previews.
-- Historical context view with confirmation guards before continuing or accepting manual workbook edits.
-- `Needs approval` and `No approval` modes with distinct visual states.
-- One-line growing text composer with compact model, reasoning, context, approval, and send controls.
-- Streaming assistant output for four protocols, with complete tool arguments validated before any Excel tool runs.
-- A single send control that becomes a spinner while running and reveals the stop action on hover or keyboard focus.
-- Settings page with system Codex toggle, protocol selection, model discovery, context length, reasoning mapping, and a configurable maximum of 1-1000 model steps (default 100).
-- Small glass-style interface with restrained transitions and `prefers-reduced-motion` support.
-- No long-term conversation storage, telemetry, cloud proxy, or workbook snapshot upload. When the current workbook has a stable identifier, one active session is stored only in a DPAPI-encrypted cache for the current Windows user. The cache stays available while the task pane remains open through its periodic liveness heartbeat, even when no conversation is occurring, and is deleted 30 minutes after the last successful heartbeat (such as after the task pane or Excel closes or crashes), or on an explicit stop, reset, or clear.
-
-## A Small Footer Detail
-
-The task pane has a quiet footer easter egg: hover or focus the `ChatEx` mark to reveal a tiny baseline scene, then click it to keep the motion awake. The spatial idea is inspired by [Detail's footer easter egg](https://detail.design/zh/detail/footer-easter-egg), while the scene uses local CSS and `.webp` character assets shipped in the repository, with no extra network dependency. Reduced-motion users get the same control without continuous movement.
-
-## Supported Protocols
-
-The custom configuration page accepts an API root such as `https://api.openai.com`. ChatExcel adds the protocol version and method path automatically:
-
-| Protocol | Generation endpoint | Model discovery | Streaming |
+| Protocol | Generation endpoint | Discovery | Streaming |
 | --- | --- | --- | --- |
 | OpenAI Responses | `/v1/responses` | `/v1/models` | SSE + JSON fallback |
 | OpenAI Chat Completions | `/v1/chat/completions` | `/v1/models` | SSE + JSON fallback |
 | Anthropic Messages | `/v1/messages` | `/v1/models` | SSE + JSON fallback |
-| Google Gemini `generateContent` | `/v1beta/models/{model}:generateContent` | `/v1beta/models` | `:streamGenerateContent?alt=sse` + JSON fallback |
+| Google Gemini | `/v1beta/models/{model}:generateContent` | `/v1beta/models` | `:streamGenerateContent?alt=sse` + JSON fallback |
 
-The adapter converts the shared internal tool loop, compatible client image inputs, tool calls, tool results, thinking settings, token usage, and provider-specific SSE events to and from each protocol. The task pane accepts text tasks only. Text deltas are forwarded immediately, while tool-call fragments are accumulated and validated only after the model step completes. A pasted `/v1`, `/v1beta`, or known method suffix is normalized automatically, and gateway path prefixes are preserved.
+Provider catalogs and compatible gateways vary. Model discovery or a successful connection test does not guarantee that a provider accepts every reasoning value, image input, or tool workflow.
 
-![ChatExcel custom provider settings](assets/screenshots/settings-400x900.png)
+## Quick start
 
-## Architecture
+### Packaged Windows launcher
 
-```text
-Excel task pane (Office.js)
-        │ same-origin HTTPS
-        ▼
-127.0.0.1:3210 local companion service
-        │ protocol adapter + in-memory sessions
-        ▼
-Codex config, custom provider, or local gateway
-```
+1. Download `ChatExcel-Launcher-0.0.2-win-x64.zip` from [GitHub Releases](https://github.com/aEboli/ChatExcel/releases/tag/v0.0.2).
+2. Verify the adjacent `.sha256` file if needed, then extract the whole archive.
+3. Run `ChatExcel Launcher.exe`.
+4. In Excel, open the `ChatEx` ribbon group and choose `Open ChatExcel`.
 
-- The task pane owns UI state, approval decisions, and Office.js execution.
-- The local Node.js service reads configuration, protects credentials, discovers models, converts protocol messages, and enforces session limits.
-- The provider receives the minimum task input, tool definitions, and tool results needed for the current loop.
-- Conversation and workbook fragments remain in memory except for the current-workbook crash-recovery cache, which expires 30 minutes after the last successful task-pane liveness heartbeat.
+The package includes its own Node.js runtime and launcher dependencies. The target computer still needs Windows 10/11 and Microsoft Excel 2019 or Microsoft 365 desktop. WPS is not supported. Existing `.xls` workbooks also require WebView2.
 
-## Technical Stack
-
-- Microsoft Excel desktop and Office.js.
-- Node.js 20+ (tested with Node.js 24), native ES modules, and Express 5.
-- `smol-toml` for Codex `config.toml` parsing.
-- Windows user-scoped DPAPI for custom API key encryption.
-- Native Node test runner and the Microsoft Office add-in development toolchain.
-- Local HTTPS using `office-addin-dev-certs`.
-- .NET 8 self-contained Windows x64 launcher for the optional one-click distribution.
-
-## Installation
-
-Requirements:
-
-- Windows 10/11.
-- Microsoft Excel 2019 or Microsoft 365 desktop.
-- Node.js 20 or newer.
-- Either a usable `%CODEX_HOME%\\config.toml` / `%USERPROFILE%\\.codex\\config.toml`, or credentials for one of the supported custom protocols.
-
-From the repository directory, the development workflow is:
+### Source development
 
 ```powershell
+git clone https://github.com/aEboli/ChatExcel.git
+cd ChatExcel
 npm install
 npm run icons
 npm run certs:install
@@ -145,45 +106,25 @@ npm run start:local
 npm run sideload
 ```
 
-The service is available at `https://localhost:3210`. `npm run start:local` starts a recovery monitor that manages only this project's service. If the managed Node.js process exits or stays unhealthy, the monitor retries with bounded backoff and waits for the existing HTTPS health check before considering it ready. The yellow load-error page is generated by the Excel host, so click `Retry` after recovery to reload the task pane. `npm run stop:local` stops both the service and its recovery monitor. The sideload script registers `manifest.xml`, locates the real Microsoft Excel executable through Windows App Paths, and opens a dedicated test workbook. In Excel, use the `ChatEx` group and click `Open ChatExcel`.
+The companion service listens only on `https://localhost:3210`. Stop the project-owned service and supervisor with `npm run stop:local`.
 
-### One-click Windows launcher
+## Existing workbook formats
 
-To build the portable Windows x64 launcher:
+| Format | Execution route | Format handling |
+| --- | --- | --- |
+| `.xlsx`, `.xlsm`, `.xlsb` | Office.js task pane | Uses the already opened workbook |
+| `.xls` | Bundled native Excel companion | Opens the original absolute path and does not silently convert or create an OOXML copy |
 
-```powershell
-npm run build:launcher
-```
-
-The output is `dist/ChatExcel Launcher/`. Double-click `ChatExcel Launcher.exe`; it verifies or installs the Office development certificate, starts or reuses the local service with its recovery monitor, registers the add-in, and opens Microsoft Excel explicitly. If the managed service exits, the monitor restores it; once the Excel host load-error page is retried after recovery, the task pane reloads. The release folder includes its own Node.js runtime and the minimal service/Office sideload dependencies, so Node.js and .NET do not need to be installed on the target machine. Microsoft Excel desktop is still required.
-
-### Existing workbooks
-
-Dropping or opening a `.xlsx`, `.xlsm`, or `.xlsb` workbook through the launcher keeps the Office.js task-pane route. An existing `.xls` workbook uses the bundled native Excel companion pane instead: it opens the original absolute path, uses a per-session current-user pipe for tool execution, and never converts, saves, or creates an OOXML copy on its own. The `.xls` route requires desktop Microsoft Excel and the WebView2 Runtime; compatibility-mode limits are returned as explicit tool errors rather than silently changing the workbook format.
-
-For the ready-to-run package, download `ChatExcel-Launcher-0.0.2-win-x64.zip` from the [GitHub Release](https://github.com/aEboli/ChatExcel/releases/tag/v0.0.2), extract it, and double-click the launcher. The adjacent `.sha256` file can be used to verify the download before extraction.
-
-For a no-side-effect package check, run:
-
-```powershell
-npm run diagnose:launcher
-```
-
-The launcher writes only sanitized startup diagnostics to `%LOCALAPPDATA%\\ChatExcel\\launcher.log`. It never stores API keys, prompts, workbook data, tool results, or image attachments.
-
-The source tree remains sufficient for development and local use; the launcher is an optional Windows distribution wrapper around the same service and sideload scripts.
+Compatibility-mode limitations are returned as explicit tool errors. ChatExcel does not bypass worksheet protection, macros, VBA, Power Query, or PivotTable security boundaries.
 
 ## Configuration
 
-### System Codex mode
-
-ChatExcel reads the current user's Codex provider on each model step. A minimal Responses configuration looks like this:
+ChatExcel can reuse the current user's WorkBuddy provider on every model step:
 
 ```toml
 model_provider = "local"
 model = "your-model"
 model_reasoning_effort = "high"
-model_verbosity = "medium"
 
 [model_providers.local]
 name = "Local Provider"
@@ -192,36 +133,36 @@ wire_api = "responses"
 env_key = "LOCAL_MODEL_TOKEN"
 ```
 
-`env_key` is preferred. `experimental_bearer_token` is supported for existing Codex configurations, but the token is never returned to the task pane.
+For a custom provider, disable system WorkBuddy configuration in Settings, choose a protocol, enter the API root and key, discover models, then select context, reasoning, and the maximum step count. Non-secret settings are stored in `%APPDATA%\ChatExcel\settings.json`; the API key is encrypted with the current Windows user's DPAPI and plaintext is kept only in the local process.
 
-### Custom provider mode
+## Privacy and safety boundaries
 
-Turn off `Use system Codex configuration` in the settings page, choose a protocol, enter only the API root, fetch models, then choose a model ID, context length, reasoning level, and maximum step count. The maximum is validated server-side from 1 through 1000 and defaults to 100.
+- The service binds to `127.0.0.1` and validates `Host` and `Origin`.
+- API keys are never returned to the task pane; provider failures go through credential redaction.
+- Request bodies, prompts, workbook data, tool results, and image attachments are not written to logs.
+- One recoverable text session may be stored in `%LOCALAPPDATA%\ChatExcel\conversation-recovery.json`, encrypted for the current Windows user and scoped to a stable workbook identity. It expires 30 minutes after the last successful task-pane heartbeat or is cleared on stop, reset, or explicit clear.
+- Pasted images remain page-memory-only. Once a session contains an image, ChatExcel clears or skips its disk checkpoint and reports that recovery is unavailable while keeping the in-memory session usable.
+- ChatExcel does not create workbook snapshots or promise rollback. Historical previews are visual and read-only.
 
-Custom settings are stored in `%APPDATA%\\ChatExcel\\settings.json`. Non-secret fields and the mode switch are stored as JSON; the API key is protected with the current Windows user's DPAPI before it is written. The plaintext key is kept only in the local service process while it is running.
+## Project structure
 
-## Usage Scenarios
+```text
+ChatExcel/
+|-- assets/                  # Icons, local UI assets, and screenshots
+|-- docs/                    # Verification notes
+|-- launcher/                # .NET Windows launcher
+|-- openspec/                # Current specifications and archived changes
+|-- scripts/                 # Certificates, lifecycle, sideload, build, and package scripts
+|-- src/server/              # Local HTTPS service, sessions, recovery, and protocol adapters
+|-- src/shared/              # Shared Excel tool schemas and application metadata
+|-- src/taskpane/            # Office task pane UI and Excel execution
+|-- tests/                   # Node tests plus native Excel smoke project
+|-- manifest.xml             # Office add-in manifest
+|-- package-lock.json
+`-- package.json
+```
 
-- Inspect a selected range and summarize anomalies without leaving Excel.
-- Turn selected report data into a structured worksheet.
-- Fill formulas across a confirmed range, apply consistent number formats, and autofit columns.
-- Create a native Excel table or chart from an existing range after reviewing the proposed action.
-- Open an existing `.xls` workbook without converting it, then review and approve the same controlled operations in the native companion pane.
-- Use a local Sub2API or another gateway through the protocol that it explicitly supports.
-- Revisit an earlier activity row to inspect the conversation context without pretending to roll back the workbook.
-- Draft long answers while they are still being generated, then stop the same task from the send control if the direction is wrong.
-
-## Security and Privacy
-
-- The service binds only to `127.0.0.1` and validates the request `Host` and `Origin`.
-- The task pane never receives a plaintext or encrypted API key.
-- Provider errors are summarized with credentials redacted; request bodies and workbook data are not logged.
-- Upstream HTTP, SSE, and protocol errors pass through one redaction boundary so tokens, query credentials, and authentication headers cannot remain in the task pane, logs, or tool results.
-- `store: false` and equivalent provider-side stateless message histories are used where the protocol supports them. The crash-recovery exception stores only one current-workbook session in a DPAPI-encrypted local cache and never automatically resends a model request or executes an Excel action.
-- Excel mutations are limited to registered tools. Unknown tools and invalid arguments are not executed; correlated failures are returned to the agent for correction. Missing or duplicate call IDs, mismatched results, denied approval, cancellation, read-only workbooks, and the step limit remain enforced boundaries.
-- ChatExcel does not bypass protection, macros, VBA, Power Query, or PivotTable security boundaries.
-
-## Validation
+## Development and validation
 
 ```powershell
 npm run check
@@ -231,21 +172,22 @@ npm audit --omit=dev
 npm run check:launcher
 dotnet build tests/native-smoke/ChatExcel.NativeSmoke.csproj --configuration Release
 openspec validate --all --strict
+git diff --check
 ```
 
-The current `main` has passed all `256/256` Node tests, JavaScript checks across `53` files, the Launcher Release build, and strict OpenSpec validation. A real Microsoft Excel `.xls` smoke run also confirmed that the source hash stays unchanged, the format code remains `56`, and range policy, write-after-read verification, cross-workbook isolation, table rollback, and cancelled-close behavior hold. The automated suite also covers configuration parsing, DPAPI storage boundaries (with isolated test doubles), endpoint normalization, all four protocol adapters and their SSE accumulators, recoverable failed tool results, mixed valid/invalid calls, whole-row and whole-column ranges, compatible client image conversion, tool loops, session limits, HTTP origin checks, task-pane layout contracts, and add-in manifest validation. Browser acceptance was performed at 400x900 and 320x700, including the default-collapsed task group, group expansion, the single send/stop control, settings persistence, the compact idle state, auto-growing input, and no horizontal overflow. A real desktop-Excel long-running stream with a controllable fixture provider remains an external acceptance item.
+`npm run build:launcher` creates the portable launcher directory. `npm run diagnose:launcher` performs a no-side-effect package inspection. A real desktop Excel acceptance pass is still required for host-specific behavior such as long streaming cancellation, live workbook edits, and native `.xls` compatibility.
 
 ## Limitations
 
-- A desktop Excel installation and a trusted local development certificate are required for sideloading.
-- The bundled launcher targets Windows x64 and Microsoft Excel desktop; it does not load the add-in into WPS. The native `.xls` companion route also requires WebView2.
-- Provider model catalogs and reasoning capabilities vary; when metadata is absent, ChatExcel uses a conservative model-name mapping.
-- The add-in does not create workbook snapshots or provide destructive workbook rollback. Historical activity is context-only and requires confirmation before continuing.
-- Development dependencies include Microsoft's add-in tooling and should be kept updated independently of the local runtime dependencies.
-- Desktop Excel stream cancellation still needs a dedicated controllable-provider smoke test; the protocol stream path itself is covered by automated tests and local task-pane preview checks.
-- Native `.xls` changes must still be accepted against the target workbook in desktop Excel before relying on compatibility-mode table or chart behavior.
-- Marketplace publication and multi-user cloud hosting are intentionally out of scope.
+- Desktop Microsoft Excel is required; the add-in is not packaged for WPS, Excel Online, or macOS.
+- The current release is Windows x64 and uses a trusted local Office development certificate.
+- Unknown provider models use conservative automatic reasoning behavior until verified metadata is available.
+- Image attachments depend on the selected upstream model or gateway supporting compatible multimodal input.
+- Marketplace publication, multi-user cloud hosting, macros, VBA, Power Query, PivotTable automation, snapshots, and destructive rollback are outside the current scope.
 
-## License
+## Release and license
 
-No license has been selected yet. Add a license file before distributing ChatExcel outside the owning organization.
+- Latest packaged release: [ChatExcel v0.0.2](https://github.com/aEboli/ChatExcel/releases/tag/v0.0.2)
+- Changelog: [CHANGELOG.md](CHANGELOG.md)
+- Detailed Chinese guide: [README.zh-CN.md](README.zh-CN.md)
+- No license has been selected. Add a license before distributing the project outside the owning organization.

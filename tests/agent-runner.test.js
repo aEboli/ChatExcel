@@ -254,6 +254,27 @@ test("把附件与模型选择传给 API 并发布上下文事件", async () => 
   assert.equal(events.some((event) => event.type === "context_updated"), true);
 });
 
+test("仅图片任务保留空文本和附件字段", async () => {
+  let captured;
+  const runner = new AgentRunner({
+    api: {
+      async start(request) {
+        captured = request;
+        return { status: "completed", message: "完成" };
+      },
+      async cancel() {},
+    },
+    async executeTool() { return { ok: true }; },
+    async requestApproval() { return true; },
+  });
+  const attachments = [{ name: "截图.png", dataUrl: "data:image/png;base64,YQ==" }];
+
+  await runner.run("", { attachments });
+
+  assert.equal(captured.message, "");
+  assert.deepEqual(captured.attachments, attachments);
+});
+
 test("把服务端文本增量转换为助手增量事件", async () => {
   const events = [];
   const runner = new AgentRunner({

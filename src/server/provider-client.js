@@ -617,7 +617,10 @@ function runtimeMetadata(config) {
 
 function requestBodyFor(protocol, config, input, toolDefinitions, { stream = false } = {}) {
   const officialCapabilities = resolveOfficialModelCapabilities(protocol, config.model);
-  const usesDeepSeekThinkingToggle = officialCapabilities?.thinkingToggle === true;
+  const usesThinkingToggle = officialCapabilities?.thinkingToggle === true;
+  const usesQwenThinkingToggle = usesThinkingToggle
+    && officialCapabilities?.reasoningMode === "thinking-toggle";
+  const usesDeepSeekThinkingToggle = usesThinkingToggle && !usesQwenThinkingToggle;
   const deepSeekReasoningEffort = config.reasoningEffort
     ?? officialCapabilities?.defaultReasoningEffort
     ?? "high";
@@ -634,8 +637,11 @@ function requestBodyFor(protocol, config, input, toolDefinitions, { stream = fal
     if (stream) body.stream = true;
     if (usesDeepSeekThinkingToggle) {
       body.reasoning = { effort: deepSeekReasoningEffort };
-    } else if (config.reasoningEffort && config.reasoningEffort !== "none") {
-      body.reasoning = { effort: config.reasoningEffort, summary: "auto" };
+    } else if (config.reasoningEffort !== null && config.reasoningEffort !== undefined) {
+      body.reasoning = {
+        effort: config.reasoningEffort,
+        ...(config.reasoningEffort === "none" ? {} : { summary: "auto" }),
+      };
     }
     if (config.verbosity) body.text = { verbosity: config.verbosity };
     return body;
@@ -654,7 +660,9 @@ function requestBodyFor(protocol, config, input, toolDefinitions, { stream = fal
     if (usesDeepSeekThinkingToggle) {
       body.thinking = { type: deepSeekReasoningEffort === "none" ? "disabled" : "enabled" };
       if (deepSeekReasoningEffort !== "none") body.reasoning_effort = deepSeekReasoningEffort;
-    } else if (config.reasoningEffort && config.reasoningEffort !== "none") {
+    } else if (usesQwenThinkingToggle) {
+      if (config.reasoningEffort === "none") body.enable_thinking = false;
+    } else if (config.reasoningEffort !== null && config.reasoningEffort !== undefined) {
       body.reasoning_effort = config.reasoningEffort;
     }
     return body;

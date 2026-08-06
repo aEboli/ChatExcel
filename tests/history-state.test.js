@@ -127,3 +127,37 @@ test("恢复展示消息会清除本地瞬时操作状态", () => {
     { role: "notice", text: "中断操作不会自动重放。", timelineIndex: -1 },
   ]);
 });
+
+test("图片附件只保留当前页面对话，恢复展示不接收附件", () => {
+  const history = new HistoryState();
+  const attachment = {
+    name: "标注.png",
+    mimeType: "image/png",
+    dataUrl: "data:image/png;base64,YQ==",
+  };
+
+  const message = history.addMessage("user", "分析图片", { attachments: [attachment] });
+  attachment.name = "已修改.png";
+
+  assert.deepEqual(message.attachments, [{
+    name: "标注.png",
+    mimeType: "image/png",
+    dataUrl: "data:image/png;base64,YQ==",
+  }]);
+
+  history.restorePresentation([{
+    role: "user",
+    text: "恢复后的文本任务",
+    attachments: [{ dataUrl: "data:image/png;base64,YQ==" }],
+  }]);
+
+  assert.deepEqual(history.visibleMessages(), [
+    {
+      id: history.messages[0].id,
+      role: "user",
+      text: "恢复后的文本任务",
+      attachments: [],
+      timelineIndex: -1,
+    },
+  ]);
+});

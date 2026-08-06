@@ -998,6 +998,92 @@ test("图片、模型选项和上下文占用沿会话传递", async (t) => {
   });
 });
 
+test("含图片的会话不落盘且只报告一次恢复不可用", async (t) => {
+  const savedCheckpoints = [];
+  const events = [];
+  const inputs = [];
+  const recoveryStore = {
+    async save(checkpoint) {
+      savedCheckpoints.push(checkpoint);
+      return { status: "saved" };
+    },
+    async restore() { return { status: "missing" }; },
+    async clear() { return { status: "missing" }; },
+    async touch() { return { status: "missing" }; },
+  };
+  const manager = new SessionManager({
+    recoveryStore,
+    responsesClient: {
+      async create({ input }) {
+        inputs.push(structuredClone(input));
+        return finalResponse("图片会话仍在内存中继续");
+      },
+    },
+  });
+  t.after(() => manager.dispose());
+  const sessionId = "session-image-no-recovery-01";
+  const workbookBinding = "workbook://image-no-recovery";
+  const dataUrl = "data:image/png;base64,YQ==";
+
+  const first = await manager.start("", sessionId, {
+    attachments: [{ name: "图片.png", dataUrl }],
+    workbookBinding,
+  }, {
+    onEvent(event) { events.push(event); },
+  });
+  const second = await manager.addMessage(sessionId, "继续分析", {
+    workbookBinding,
+  }, {
+    onEvent(event) { events.push(event); },
+  });
+
+  assert.equal(first.status, "completed");
+  assert.equal(second.status, "completed");
+  assert.equal(savedCheckpoints.length, 0, "含图片的会话不得生成恢复快照");
+  assert.equal(manager.sessions.has(sessionId), true);
+  assert.deepEqual(inputs[0][0].content, [{ type: "input_image", image_url: dataUrl }]);
+  assert.equal(
+    events.filter((event) => event.type === "recovery_unavailable").length,
+    1,
+  );
+});
+
+test("已有文本恢复快照的会话追加图片时清除旧快照", async (t) => {
+  const savedCheckpoints = [];
+  const clearedCheckpoints = [];
+  const recoveryStore = {
+    async save(checkpoint) {
+      savedCheckpoints.push(checkpoint);
+      return { status: "saved" };
+    },
+    async restore() { return { status: "missing" }; },
+    async clear(checkpoint) {
+      clearedCheckpoints.push(checkpoint);
+      return { status: "cleared" };
+    },
+    async touch() { return { status: "missing" }; },
+  };
+  const manager = new SessionManager({
+    recoveryStore,
+    responsesClient: { async create() { return finalResponse(); } },
+  });
+  t.after(() => manager.dispose());
+  const sessionId = "session-image-clears-snapshot-01";
+  const workbookBinding = "workbook://image-clears-snapshot";
+
+  await manager.start("先建立文本恢复记录", sessionId, { workbookBinding });
+  const savedBeforeImage = savedCheckpoints.length;
+  assert.ok(savedBeforeImage > 0);
+
+  await manager.addMessage(sessionId, "", {
+    attachments: [{ dataUrl: "data:image/png;base64,YQ==" }],
+    workbookBinding,
+  });
+
+  assert.equal(savedCheckpoints.length, savedBeforeImage);
+  assert.deepEqual(clearedCheckpoints, [{ sessionId, workbookKey: workbookBinding }]);
+});
+
 test("拒绝过多或不支持格式的图片", async (t) => {
   const manager = new SessionManager({ responsesClient: { async create() { return finalResponse(); } } });
   t.after(() => manager.dispose());

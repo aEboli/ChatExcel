@@ -82,6 +82,8 @@
 
       <footer class="composer-shell glass-surface">
         <div class="composer" id="composer">
+          <div class="attachment-error" id="attachment-error" role="alert" hidden></div>
+          <div class="attachment-list" id="attachment-list" aria-label="待发送图片" hidden></div>
           <label class="sr-only" for="prompt-input">工作簿任务</label>
           <textarea
             id="prompt-input"
@@ -299,6 +301,16 @@
             <button class="button secondary" id="confirm-cancel-button" type="button">取消</button>
             <button class="button primary" id="confirm-accept-button" type="button">确认</button>
           </div>
+        </section>
+      </div>
+
+      <div class="image-preview-backdrop" id="image-preview-modal" hidden>
+        <section class="image-preview-dialog" role="dialog" aria-modal="true" aria-labelledby="image-preview-title">
+          <h2 class="sr-only" id="image-preview-title">图片预览</h2>
+          <button class="icon-button image-preview-close" id="image-preview-close" type="button" title="关闭图片预览" aria-label="关闭图片预览">
+            <img src="/assets/fluent/dismiss.svg" alt="" />
+          </button>
+          <img class="image-preview-image" id="image-preview-image" alt="" />
         </section>
       </div>
     </div>

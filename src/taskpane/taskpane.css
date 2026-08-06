@@ -184,6 +184,9 @@ h1 {
 .icon-button:focus-visible,
 .toolbar-button:focus-visible,
 .mode-button:focus-visible,
+.attachment-preview:focus-visible,
+.attachment-remove:focus-visible,
+.image-preview-close:focus-visible,
 .easter-trigger:focus-visible,
 .section-heading:focus-visible,
 .activity-group-header:focus-visible,
@@ -716,6 +719,31 @@ summary:focus-visible {
   background: var(--red-soft);
 }
 
+.message-images {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(64px, 1fr));
+  min-inline-size: 132px;
+  gap: 5px;
+  margin-bottom: 7px;
+}
+
+.message-image-button {
+  min-width: 0;
+  aspect-ratio: 4 / 3;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid rgba(49, 70, 60, 0.18);
+  border-radius: 6px;
+  background: #dce5e1;
+}
+
+.message-image-button > img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
 .action-flow {
   display: grid;
   justify-items: center;
@@ -1033,6 +1061,75 @@ summary:focus-visible {
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.82);
 }
 
+.attachment-error {
+  margin: 6px 6px 0;
+  padding: 5px 7px;
+  border: 1px solid rgba(180, 35, 24, 0.18);
+  border-radius: 5px;
+  color: #861b13;
+  background: var(--red-soft);
+  font-size: 10px;
+  line-height: 14px;
+}
+
+.attachment-list {
+  display: flex;
+  min-width: 0;
+  gap: 6px;
+  margin: 6px 6px 0;
+  padding-bottom: 1px;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+}
+
+.attachment-item {
+  position: relative;
+  flex: 0 0 66px;
+  width: 66px;
+  height: 50px;
+  overflow: hidden;
+  border: 1px solid rgba(49, 70, 60, 0.2);
+  border-radius: 6px;
+  background: #dce5e1;
+}
+
+.attachment-preview {
+  display: block;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  overflow: hidden;
+}
+
+.attachment-preview > img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.attachment-remove {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.94);
+}
+
+.attachment-remove > img {
+  width: 12px;
+  height: 12px;
+}
+
 .composer textarea {
   display: block;
   width: 100%;
@@ -1257,23 +1354,33 @@ summary:focus-visible {
 .effort-button[data-effort-level="1"] .effort-meter i:nth-child(-n + 1),
 .effort-button[data-effort-level="2"] .effort-meter i:nth-child(-n + 2),
 .effort-button[data-effort-level="3"] .effort-meter i:nth-child(-n + 3),
-.effort-button[data-effort-level="4"] .effort-meter i:nth-child(-n + 4) {
+.effort-button[data-effort-level="4"] .effort-meter i:nth-child(-n + 4),
+.effort-button[data-effort-level="5"] .effort-meter i:nth-child(-n + 4),
+.effort-button[data-effort-level="6"] .effort-meter i:nth-child(-n + 4) {
   background: var(--green);
 }
 
 .effort-button[data-effort-level="2"] .effort-meter i:nth-child(2),
 .effort-button[data-effort-level="3"] .effort-meter i:nth-child(3),
-.effort-button[data-effort-level="4"] .effort-meter i:nth-child(4) {
+.effort-button[data-effort-level="4"] .effort-meter i:nth-child(4),
+.effort-button[data-effort-level="5"] .effort-meter i:nth-child(4),
+.effort-button[data-effort-level="6"] .effort-meter i:nth-child(4) {
   height: 5px;
 }
 
 .effort-button[data-effort-level="3"] .effort-meter i:nth-child(3),
-.effort-button[data-effort-level="4"] .effort-meter i:nth-child(4) {
+.effort-button[data-effort-level="4"] .effort-meter i:nth-child(4),
+.effort-button[data-effort-level="5"] .effort-meter i:nth-child(4),
+.effort-button[data-effort-level="6"] .effort-meter i:nth-child(4) {
   height: 7px;
 }
 
-.effort-button[data-effort-level="4"] .effort-meter i:nth-child(4) {
+.effort-button[data-effort-level="5"] .effort-meter i:nth-child(4) {
   background: #c48500;
+}
+
+.effort-button[data-effort-level="6"] .effort-meter i:nth-child(4) {
+  background: #b6473d;
 }
 
 .context-button {
@@ -2033,6 +2140,50 @@ summary:focus-visible {
   color: #59665f;
   font-size: 11px;
   line-height: 17px;
+}
+
+.image-preview-backdrop {
+  position: fixed;
+  z-index: 50;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: rgba(23, 32, 28, 0.5);
+  backdrop-filter: blur(7px);
+}
+
+.image-preview-dialog {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: min(100%, 720px);
+  max-height: calc(100vh - 32px);
+  padding: 36px 10px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.78);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 18px 46px rgba(19, 37, 27, 0.28);
+}
+
+.image-preview-image {
+  display: block;
+  max-width: 100%;
+  max-height: calc(100vh - 94px);
+  object-fit: contain;
+}
+
+.image-preview-close {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 30px;
+  height: 26px;
+}
+
+.image-preview-close > img {
+  width: 15px;
+  height: 15px;
 }
 
 @keyframes status-pulse {

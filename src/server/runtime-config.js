@@ -11,6 +11,7 @@ import {
   getProtocolDefinition,
   normalizeApiRoot,
   protocolAuthHeaders,
+  protocolCompatibleReasoningEfforts,
   protocolOptions,
   protocolReasoningEfforts,
 } from "./protocols.js";
@@ -92,10 +93,12 @@ export function inferReasoningEfforts(modelId, protocol = DEFAULT_PROTOCOL) {
 }
 
 function modelReasoningMetadata(model) {
+  const preservesPersistedEfforts = model?.reasoningSource !== "inferred"
+    && model?.reasoningSource !== "compatibility";
   const candidates = [
     model?.supported_reasoning_efforts,
     model?.reasoning_efforts,
-    model?.reasoningEfforts,
+    ...(preservesPersistedEfforts ? [model?.reasoningEfforts] : []),
     model?.supportedReasoningEfforts,
     model?.capabilities?.reasoning_efforts,
     model?.capabilities?.supported_reasoning_efforts,
@@ -121,22 +124,32 @@ function modelCatalogEntry(protocol, id, model) {
       contextWindow: official.contextWindow,
       contextSource: "official",
       reasoningEfforts: official.reasoningEfforts,
+      compatibleReasoningEfforts: [],
       reasoningMode: official.reasoningMode,
       reasoningSource: "official",
       defaultReasoningEffort: official.defaultReasoningEffort,
       capabilityReference: official.reference,
       capabilityReferences: official.references,
+      ...(official.thinkingToggle === true ? { thinkingToggle: true } : {}),
     };
   }
 
   const declaredEfforts = modelReasoningMetadata(model);
   const reasoningEfforts = declaredEfforts.length > 0 ? declaredEfforts : inferEfforts(protocol, id);
+  const compatibleReasoningEfforts = reasoningEfforts.length === 0
+    ? protocolCompatibleReasoningEfforts(protocol)
+    : [];
   const contextWindow = modelContextWindowMetadata(model);
   return {
     id,
     reasoningEfforts,
+    compatibleReasoningEfforts,
     reasoningMode: "levels",
-    reasoningSource: declaredEfforts.length > 0 ? "provider" : "inferred",
+    reasoningSource: declaredEfforts.length > 0
+      ? "provider"
+      : compatibleReasoningEfforts.length > 0
+        ? "compatibility"
+        : "inferred",
     defaultReasoningEffort: reasoningEfforts[0] ?? null,
     ...(contextWindow ? { contextWindow, contextSource: "provider" } : {}),
   };
@@ -189,13 +202,6 @@ function addCurrentModel(catalog, config) {
   if (!current) {
     current = modelCatalogEntry(protocolFromConfig(config), config.model);
     models.unshift(current);
-  }
-  if (
-    config.reasoningEffort &&
-    current.reasoningSource !== "official" &&
-    !current.reasoningEfforts.includes(config.reasoningEffort)
-  ) {
-    current.reasoningEfforts = [...current.reasoningEfforts, config.reasoningEffort];
   }
   if (!("defaultReasoningEffort" in current)) {
     current.defaultReasoningEffort = current.reasoningEfforts[0] ?? null;
@@ -360,17 +366,17 @@ export class RuntimeConfigStore {
     }
     const isCurrentModel = model === normalizedConfig.model;
     const reasoningEffort = options.reasoningEffort === undefined
-      ? modelEntry.reasoningSource === "official"
-        ? modelEntry.defaultReasoningEffort
-        : modelEntry.reasoningMode === "provider-default"
-          ? null
-          : isCurrentModel
-            ? normalizedConfig.reasoningEffort ?? modelEntry.defaultReasoningEffort
-            : modelEntry.defaultReasoningEffort
+      ? modelEntry.defaultReasoningEffort ?? null
       : options.reasoningEffort;
+    const compatibleReasoningEfforts = Array.isArray(modelEntry.compatibleReasoningEfforts)
+      ? modelEntry.compatibleReasoningEfforts
+      : [];
+    const supportedReasoningEfforts = modelEntry.reasoningEfforts.length > 0
+      ? modelEntry.reasoningEfforts
+      : compatibleReasoningEfforts;
     if (
       reasoningEffort !== null &&
-      (typeof reasoningEffort !== "string" || !modelEntry.reasoningEfforts.includes(reasoningEffort))
+      (typeof reasoningEffort !== "string" || !supportedReasoningEfforts.includes(reasoningEffort))
     ) {
       throw new RuntimeConfigError(
         "REASONING_EFFORT_UNSUPPORTED",
@@ -402,9 +408,11 @@ export class RuntimeConfigStore {
         protocol: config.protocol,
         protocolLabel: getProtocolDefinition(config.protocol).label,
         reasoningEfforts: currentModel.reasoningEfforts,
+        compatibleReasoningEfforts: currentModel.compatibleReasoningEfforts,
         reasoningMode: currentModel.reasoningMode,
         reasoningSource: currentModel.reasoningSource,
         defaultReasoningEffort: currentModel.defaultReasoningEffort,
+        thinkingToggle: currentModel.thinkingToggle === true,
         contextSource: currentModel.contextSource ?? null,
       },
       models,

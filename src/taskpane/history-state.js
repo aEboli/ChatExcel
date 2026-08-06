@@ -135,11 +135,16 @@ export class HistoryState {
     return entry;
   }
 
-  addMessage(role, text, { timelineIndex = this.latestIndex } = {}) {
+  addMessage(role, text, { attachments = [], timelineIndex = this.latestIndex } = {}) {
     const message = {
       id: globalThis.crypto?.randomUUID?.() ?? `message_${this.messages.length + 1}`,
       role,
       text,
+      attachments: Array.isArray(attachments)
+        ? attachments
+          .filter((attachment) => attachment && typeof attachment.dataUrl === "string")
+          .map(({ name, mimeType, dataUrl }) => ({ name, mimeType, dataUrl }))
+        : [],
       timelineIndex,
     };
     this.messages.push(message);

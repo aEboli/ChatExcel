@@ -96,6 +96,36 @@ async function run(protocol, endpoint, payload, check, requestInput = input) {
   check(captured, response);
 }
 
+async function captureOpenAiRequestBody(protocol, {
+  model = "gpt-5.6",
+  reasoningEffort = null,
+} = {}) {
+  const endpoint = protocol === "openai-responses"
+    ? "https://api.example/v1/responses"
+    : "https://api.example/v1/chat/completions";
+  const payload = protocol === "openai-responses"
+    ? { output: [] }
+    : { choices: [{ message: { role: "assistant", content: "完成", tool_calls: [] } }] };
+  let captured;
+  const client = createProviderClient({
+    configLoader: async () => ({
+      ...config(protocol, endpoint),
+      model,
+      reasoningEffort,
+    }),
+    fetchImpl: async (_url, options) => {
+      captured = JSON.parse(options.body);
+      return new Response(JSON.stringify(payload), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    },
+  });
+
+  await client.create({ input: [] });
+  return captured;
+}
+
 test("OpenAI Responses 保持无状态请求并归一化输出", async () => {
   await run("openai-responses", "https://api.example/v1/responses", {
     output: [{ type: "function_call", name: "read_range", call_id: "call_2", arguments: "{}" }],
@@ -122,6 +152,57 @@ test("Chat Completions 转换图片、工具和工具结果", async () => {
     assert.equal(Object.hasOwn(request.body, "thinking"), false);
     assert.equal(response.output[0].content[0].text, "完成");
   });
+});
+
+test("普通 OpenAI Responses 区分自动省略和显式思考档位", async () => {
+  const automatic = await captureOpenAiRequestBody("openai-responses");
+  assert.equal(Object.hasOwn(automatic, "reasoning"), false);
+
+  const low = await captureOpenAiRequestBody("openai-responses", { reasoningEffort: "low" });
+  assert.equal(low.reasoning?.effort, "low");
+
+  const disabled = await captureOpenAiRequestBody("openai-responses", { reasoningEffort: "none" });
+  assert.deepEqual(disabled.reasoning, { effort: "none" });
+});
+
+test("普通 Chat Completions 区分自动省略和显式思考档位", async () => {
+  const automatic = await captureOpenAiRequestBody("openai-chat-completions");
+  assert.equal(Object.hasOwn(automatic, "reasoning_effort"), false);
+
+  const high = await captureOpenAiRequestBody("openai-chat-completions", { reasoningEffort: "high" });
+  assert.equal(high.reasoning_effort, "high");
+
+  const disabled = await captureOpenAiRequestBody("openai-chat-completions", { reasoningEffort: "none" });
+  assert.equal(disabled.reasoning_effort, "none");
+});
+
+test("Qwen3.7 Max Chat Completions 使用自动省略和官方关闭开关", async () => {
+  const automatic = await captureOpenAiRequestBody("openai-chat-completions", {
+    model: "qwen3.7-max",
+  });
+  for (const field of ["enable_thinking", "thinking_budget", "reasoning_effort"]) {
+    assert.equal(Object.hasOwn(automatic, field), false);
+  }
+
+  const disabled = await captureOpenAiRequestBody("openai-chat-completions", {
+    model: "qwen3.7-max",
+    reasoningEffort: "none",
+  });
+  assert.equal(disabled.enable_thinking, false);
+  assert.equal(Object.hasOwn(disabled, "thinking_budget"), false);
+  assert.equal(Object.hasOwn(disabled, "reasoning_effort"), false);
+});
+
+test("Qwen3.7 Max Responses 使用 reasoning.effort 且不混入 Chat 字段", async () => {
+  const body = await captureOpenAiRequestBody("openai-responses", {
+    model: "qwen3.7-max",
+    reasoningEffort: "minimal",
+  });
+
+  assert.equal(body.reasoning?.effort, "minimal");
+  for (const field of ["enable_thinking", "thinking_budget", "reasoning_effort"]) {
+    assert.equal(Object.hasOwn(body, field), false);
+  }
 });
 
 test("DeepSeek V4 Flash 按官方 Chat Completions 格式控制思考", async () => {

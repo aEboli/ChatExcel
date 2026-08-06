@@ -27,6 +27,8 @@ export const PROTOCOL_DEFINITIONS = Object.freeze({
   }),
 });
 
+const OPENAI_COMPATIBLE_REASONING_EFFORTS = Object.freeze(["low", "medium", "high"]);
+
 const KNOWN_SUFFIXES = [
   /\/v1beta\/models\/[^/]+:generatecontent$/i,
   /\/v1\/chat\/completions$/i,
@@ -135,6 +137,7 @@ export function protocolAuthHeaders(protocol, token) {
 
 export function protocolReasoningEfforts(protocol, modelId) {
   const definition = requireProtocol(protocol);
+  if (definition.family === "openai") return [];
   const normalized = String(modelId).toLowerCase();
   if (definition.family === "gemini") {
     if (/gemini-3|thinking/.test(normalized)) {
@@ -150,10 +153,13 @@ export function protocolReasoningEfforts(protocol, modelId) {
       ? ["none", "low", "medium", "high"]
       : ["none"];
   }
-  if (/^(gpt-5|gpt-6|o[134](?:\b|[-_.])|codex)|reason|thinking/.test(normalized)) {
-    return ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
-  }
   return ["none"];
+}
+
+export function protocolCompatibleReasoningEfforts(protocol) {
+  return requireProtocol(protocol).family === "openai"
+    ? [...OPENAI_COMPATIBLE_REASONING_EFFORTS]
+    : [];
 }
 
 export function clampReasoningEffort(protocol, effort) {
