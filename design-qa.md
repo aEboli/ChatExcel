@@ -3,7 +3,7 @@
 ## 范围
 
 - 用户提供的参考截图仅用于本机视觉对照，不纳入公开仓库。
-- 当前任务窗格：`assets/screenshots/taskpane-400x900.png`
+- 当前任务窗格：`assets/screenshots/taskpane-compact-400x900.png`
 - 当前设置页：`assets/screenshots/settings-400x900.png`
 - 验收日期：2026-08-01
 - 验收环境：Codex in-app browser、本地 HTTPS `https://localhost:3210/taskpane.html?preview=1`
@@ -23,7 +23,7 @@
 | 输入框默认一行并自动增高 | 初始 34px，三行文本增至 65px，最大高度保持受控 | 通过 |
 | 粘贴图片进入附件队列 | 剪贴板 PNG 生成预览和删除按钮，删除后发送按钮恢复禁用 | 通过 |
 | 毛玻璃 UI 和克制动效 | 半透明表面、细边框；设置页、附件、活动记录和状态反馈使用 180ms 左右过渡 | 通过 |
-| 页脚彩蛋动效 | `ChatEx` 页脚固定 28px；悬停/键盘聚焦显现 CSS 基线场景，点击固定活动状态，`prefers-reduced-motion` 下保持静态 | 通过 |
+| 页脚彩蛋动效 | `ChatEx` 页脚固定 24px；悬停/键盘聚焦显现 CSS 基线场景，点击固定活动状态，`prefers-reduced-motion` 下保持静态 | 通过 |
 
 ## 响应式证据
 
@@ -47,7 +47,7 @@
 
 ## 截图
 
-![任务窗格](assets/screenshots/taskpane-400x900.png)
+![任务窗格](assets/screenshots/taskpane-compact-400x900.png)
 
 ![设置页](assets/screenshots/settings-400x900.png)
 
@@ -76,6 +76,26 @@
 ![400px 对话流](assets/screenshots/conversation-flow-400x900.png)
 
 ![320px 对话流](assets/screenshots/conversation-flow-320x700.png)
+
+## 紧凑密度增量验收
+
+- 验收日期：2026-08-07
+- 验收环境：Codex in-app browser、本地 HTTPS `https://localhost:3210/taskpane.html?preview=1`
+- 验收边界：只验证浏览器任务窗格和设置页布局；没有发送模型请求、修改工作簿或保存配置。
+
+| 目标 | 400x900 | 320x700 | 状态 |
+| --- | --- | --- | --- |
+| 固定区域收紧 | 顶部栏 44px、操作记录 70.7px、composer 77.7px、页脚 24px | 顶部栏 44px、操作记录 70.7px、composer 77.7px、页脚 24px | 通过 |
+| 正文可读性 | 输入正文 12px / 17px；模型、审批和发送控件 28px | 输入正文 12px / 17px；模型、审批和发送控件 28px | 通过 |
+| 横向稳定性 | `body.scrollWidth = body.clientWidth = 400` | `body.scrollWidth = body.clientWidth = 320` | 通过 |
+| 遮挡与越界 | 五个主要区域无重叠，核心控件均在视口内 | 五个主要区域无重叠，核心控件均在视口内 | 通过 |
+| 键盘焦点 | 设置按钮显示 2px 实线焦点环 | 设置按钮显示 2px 实线焦点环 | 通过 |
+| 设置页命中区域 | 返回 30px、开关 24px、文本按钮 24px、输入框 30px、取消/保存 28px | 使用同一紧凑 CSS 基线 | 通过 |
+| 浏览器运行状态 | 控制台无 error | 控制台无 error | 通过 |
+
+![400px 紧凑任务窗格](assets/screenshots/taskpane-compact-400x900.png)
+
+![320px 紧凑任务窗格](assets/screenshots/taskpane-compact-320x700.png)
 
 ## 结论
 

@@ -2,6 +2,24 @@
 
 All notable changes to ChatExcel are documented here.
 
+## [0.0.3] - 2026-08-07
+
+### Added
+
+- Clipboard PNG, JPEG, and WebP image input with image-only tasks, fixed-size thumbnails, accessible preview controls, and protocol-level multimodal conversion. Image attachments remain page-memory-only and are excluded from recovery checkpoints.
+- Capability-safe model and reasoning controls: verified official metadata remains separate from compatible fallbacks, while unknown OpenAI-compatible models default to automatic reasoning.
+- A `5,000`-cell impact boundary for range-changing tools, with `impact` and read-back `verification` summaries after successful mutations.
+
+### Changed
+
+- Tightened the task-pane layout at 400px and 320px widths so fixed controls leave more room for conversation and workbook results. Message text remains 12px/17px, common desktop controls retain at least 24px hit targets, and focus and reduced-motion behavior are unchanged.
+- Updated the Windows x64 launcher, ZIP naming, README download links, and release metadata to `0.0.3`.
+
+### Known limitations
+
+- The native `.xls` companion route still requires desktop Microsoft Excel and WebView2. Compatibility-mode table and chart behavior must be accepted against the target workbook before operational use.
+- Desktop Excel long-running stream cancellation, live workbook edits, and native `.xls` compatibility still require host-level acceptance on the target machine.
+
 ## [0.0.2] - 2026-08-02
 
 ### Added
@@ -21,8 +39,6 @@ All notable changes to ChatExcel are documented here.
 
 - The native `.xls` companion route requires desktop Microsoft Excel and WebView2. Compatibility-mode table and chart behavior must be accepted against the target workbook before operational use.
 - Desktop Excel long-running stream cancellation still needs a dedicated controllable-provider acceptance test.
-
-## [0.0.1] - 2026-08-01
 
 ## [0.0.1] - 2026-08-01
 
@@ -51,3 +67,4 @@ The first GitHub release of the local Excel agent.
 
 [0.0.1]: https://github.com/aEboli/ChatExcel/releases/tag/v0.0.1
 [0.0.2]: https://github.com/aEboli/ChatExcel/releases/tag/v0.0.2
+[0.0.3]: https://github.com/aEboli/ChatExcel/releases/tag/v0.0.3

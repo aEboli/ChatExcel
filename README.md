@@ -2,7 +2,7 @@
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/version-v0.0.2-107c41.svg)](https://github.com/aEboli/ChatExcel/releases/tag/v0.0.2)
+[![Version](https://img.shields.io/badge/version-v0.0.3-107c41.svg)](https://github.com/aEboli/ChatExcel/releases/tag/v0.0.3)
 [![Node.js](https://img.shields.io/badge/Node.js-%3E%3D20-339933.svg)](https://nodejs.org/)
 [![Microsoft Excel](https://img.shields.io/badge/Microsoft-Excel-217346.svg)](https://www.microsoft.com/microsoft-365/excel)
 [![Windows](https://img.shields.io/badge/Windows-x64-0078d4.svg)](https://github.com/aEboli/ChatExcel/releases)
@@ -12,21 +12,22 @@
 
 Inspect sheets, reason over workbook context, paste reference images, and perform controlled Excel edits from one compact task pane.
 
-Current release: `v0.0.2` · [`main`](https://github.com/aEboli/ChatExcel) contains the latest development updates
+Current release: `v0.0.3` · source, Windows launcher, and release assets are version-aligned
 
 </div>
 
 > The Chinese README is the primary, more detailed guide: [README.zh-CN.md](README.zh-CN.md). This English page is a concise project overview.
 
-## Current `main` updates
+## What's new in v0.0.3
 
 - **Clipboard image input:** paste PNG, JPEG, or WebP images into the composer, inspect fixed-size thumbnails, remove them, or open an accessible full preview before sending. Image-only tasks are supported.
 - **Non-persistent image sessions:** attachments remain in page memory and use the existing multimodal provider adapters. Sessions containing images deliberately skip disk recovery so images never enter the encrypted recovery snapshot.
 - **Capability-safe model controls:** exact official model matches use verified context and reasoning metadata; unknown OpenAI-compatible models default to automatic mode and expose compatibility choices separately from verified capability claims.
 - **Protocol-specific reasoning:** ChatExcel preserves provider controls such as Qwen thinking toggles, DeepSeek V4 reasoning modes, and OpenAI reasoning levels without silently reusing an invalid selection after a model change.
 - **Stricter workbook mutations:** range-changing tools enforce a `5,000`-cell impact boundary and report `impact` plus read-back `verification` data.
+- **Compact task pane:** tighter fixed areas preserve more room for conversation and workbook results at 400px and 320px widths while retaining 12px/17px message text, 24px desktop hit targets, focus states, and reduced-motion behavior.
 
-This development line is being published to GitHub `main`; `v0.0.2` remains the latest packaged release.
+This release packages the verified `main` changes above for GitHub users and the Windows x64 launcher.
 
 ## What ChatExcel does
 
@@ -45,7 +46,7 @@ ChatExcel embeds a tool-using agent beside the active workbook. It can inspect r
 ## Interface
 
 <p align="center">
-  <img src="assets/screenshots/taskpane-400x900.png" alt="ChatExcel task pane" width="390" />
+  <img src="assets/screenshots/taskpane-compact-400x900.png" alt="ChatExcel compact task pane" width="390" />
   <img src="assets/screenshots/settings-400x900.png" alt="ChatExcel provider settings" width="390" />
 </p>
 
@@ -85,7 +86,7 @@ Provider catalogs and compatible gateways vary. Model discovery or a successful 
 
 ### Packaged Windows launcher
 
-1. Download `ChatExcel-Launcher-0.0.2-win-x64.zip` from [GitHub Releases](https://github.com/aEboli/ChatExcel/releases/tag/v0.0.2).
+1. Download `ChatExcel-Launcher-0.0.3-win-x64.zip` from [GitHub Releases](https://github.com/aEboli/ChatExcel/releases/tag/v0.0.3).
 2. Verify the adjacent `.sha256` file if needed, then extract the whole archive.
 3. Run `ChatExcel Launcher.exe`.
 4. In Excel, open the `ChatEx` ribbon group and choose `Open ChatExcel`.
@@ -187,7 +188,7 @@ git diff --check
 
 ## Release and license
 
-- Latest packaged release: [ChatExcel v0.0.2](https://github.com/aEboli/ChatExcel/releases/tag/v0.0.2)
+- Latest packaged release: [ChatExcel v0.0.3](https://github.com/aEboli/ChatExcel/releases/tag/v0.0.3)
 - Changelog: [CHANGELOG.md](CHANGELOG.md)
 - Detailed Chinese guide: [README.zh-CN.md](README.zh-CN.md)
 - No license has been selected. Add a license before distributing the project outside the owning organization.

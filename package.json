@@ -1,6 +1,6 @@
 {
   "name": "chatexcel",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "private": true,
   "description": "复用系统 Codex 配置或自定义模型接口的 ChatExcel 加载项",
   "type": "module",

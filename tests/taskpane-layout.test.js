@@ -49,9 +49,10 @@ test("页脚彩蛋在固定高度内展示田野跑步场景", async () => {
     "/assets/easter-characters/runner-sunset-wide.webp",
   ]);
   await Promise.all(characterPaths.map((path) => access(new URL(`..${path}`, import.meta.url))));
-  assert.match(taskpaneCss, /\.easter-footer\s*\{[\s\S]*flex:\s*0\s+0\s+28px;[\s\S]*height:\s*28px;[\s\S]*min-height:\s*28px;[\s\S]*max-height:\s*28px;/);
+  assert.match(taskpaneCss, /\.easter-footer\s*\{[\s\S]*flex:\s*0\s+0\s+24px;[\s\S]*height:\s*24px;[\s\S]*min-height:\s*24px;[\s\S]*max-height:\s*24px;/);
+  assert.match(taskpaneCss, /\.easter-trigger\s*\{[\s\S]*height:\s*24px;/);
   assert.match(taskpaneCss, /\.easter-walker\s*\{[\s\S]*animation:\s*easter-walk\s+12s\s+linear\s+infinite;/);
-  assert.match(taskpaneCss, /\.easter-walker\s*\{[\s\S]*width:\s*24px;[\s\S]*height:\s*24px;/);
+  assert.match(taskpaneCss, /\.easter-walker\s*\{[\s\S]*width:\s*20px;[\s\S]*height:\s*20px;/);
   assert.match(taskpaneCss, /\.easter-walker img\s*\{[\s\S]*object-fit:\s*contain;/);
   assert.match(taskpaneCss, /@media \(prefers-reduced-motion: reduce\)\s*\{[\s\S]*\.easter-walker\s*\{[\s\S]*animation:\s*none\s*!important;/);
 });
@@ -168,6 +169,26 @@ test("窄任务窗格底部控制保持单行且动作按钮紧凑", () => {
   assert.match(taskpaneCss, /\.send-button\s*\{\s*width:\s*34px;\s*height:\s*28px;/);
   assert.match(taskpaneCss, /@media \(max-width: 439px\)[\s\S]*?\.action-controls\s*\{[\s\S]*?gap:\s*3px;[\s\S]*?justify-content:\s*flex-end;/);
   assert.doesNotMatch(manifest, /RequestedWidth|<Width>/);
+});
+
+test("任务窗格使用紧凑密度并保留正文与桌面控件可读下限", () => {
+  const appShellRule = taskpaneCss.match(/\.app-shell\s*\{[^}]*\}/)?.[0] ?? "";
+
+  assert.match(appShellRule, /gap:\s*5px;/);
+  assert.match(appShellRule, /padding:\s*5px;/);
+  assert.doesNotMatch(appShellRule, /(?:transform|zoom)\s*:/);
+  assert.match(taskpaneCss, /\.topbar\s*\{[\s\S]*?min-height:\s*44px;[\s\S]*?padding:\s*5px\s+7px;/);
+  assert.match(taskpaneCss, /\.section-heading\s*\{[\s\S]*?min-height:\s*30px;/);
+  assert.match(taskpaneCss, /\.activity-group-header\s*\{[\s\S]*?min-height:\s*38px;/);
+  assert.match(taskpaneCss, /\.activity-row\s*\{[\s\S]*?min-height:\s*32px;/);
+  assert.match(taskpaneCss, /\.message\s*\{[\s\S]*?font-size:\s*12px;[\s\S]*?line-height:\s*17px;/);
+  assert.match(taskpaneCss, /\.composer-shell\s*\{[\s\S]*?padding:\s*5px;/);
+  assert.match(taskpaneCss, /\.composer textarea\s*\{[\s\S]*?height:\s*32px;[\s\S]*?font-size:\s*12px;[\s\S]*?line-height:\s*17px;/);
+  assert.match(taskpaneCss, /\.toolbar-button,[\s\S]*?\.mode-button\s*\{[\s\S]*?height:\s*28px;/);
+  assert.match(taskpaneCss, /\.icon-button\s*\{[\s\S]*?height:\s*30px;/);
+  assert.match(taskpaneCss, /\.text-button,[\s\S]*?\.inline-button\s*\{[\s\S]*?min-height:\s*24px;/);
+  assert.match(taskpaneCss, /\.switch\s*\{[\s\S]*?height:\s*24px;/);
+  assert.match(taskpaneCss, /\.settings-header\s*\{[\s\S]*?min-height:\s*44px;/);
 });
 
 test("任务窗格恢复并单独持久化审批偏好", () => {

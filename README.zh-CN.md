@@ -2,7 +2,7 @@
 
 <div align="center">
 
-[![版本](https://img.shields.io/badge/version-v0.0.2-107c41.svg)](https://github.com/aEboli/ChatExcel/releases/tag/v0.0.2)
+[![版本](https://img.shields.io/badge/version-v0.0.3-107c41.svg)](https://github.com/aEboli/ChatExcel/releases/tag/v0.0.3)
 [![Node.js](https://img.shields.io/badge/Node.js-%3E%3D20-339933.svg)](https://nodejs.org/)
 [![Microsoft Excel](https://img.shields.io/badge/Microsoft-Excel-217346.svg)](https://www.microsoft.com/microsoft-365/excel)
 [![Windows](https://img.shields.io/badge/Windows-x64-0078d4.svg)](https://github.com/aEboli/ChatExcel/releases)
@@ -12,21 +12,22 @@
 
 不离开 Excel，读取当前工作表、理解工作簿上下文、粘贴参考图片，并在明确边界内完成可审计的修改。
 
-当前发行版：`v0.0.2` · [`main`](https://github.com/aEboli/ChatExcel) 包含最新开发更新
+当前发行版：`v0.0.3` · 源码、Windows 启动器和 Release 资产保持同一版本
 
 </div>
 
 > 这份中文 README 是项目的详细使用说明；英文概览见 [README.md](README.md)。
 
-## 当前 `main` 更新
+## v0.0.3 更新
 
 - **剪贴板图片输入：** 聚焦任务输入框时可粘贴 PNG、JPEG 或 WebP，查看固定尺寸缩略图、删除附件，或打开支持键盘关闭和焦点返回的完整预览；只发送图片、不填写文字也可以开始任务。
 - **图片会话不持久化：** 图片复用现有多模态协议适配器，只保存在当前页面内存中。含图片的会话会跳过磁盘恢复，图片不会进入加密恢复快照。
 - **能力安全的模型控制：** 精确匹配官方目录的模型使用已验证上下文长度和思考能力；未知 OpenAI 兼容模型默认使用“自动”，兼容候选与已证实能力分开呈现。
 - **协议专属思考参数：** 保留 Qwen 思考开关、DeepSeek V4 推理模式和 OpenAI 思考等级；切换模型或刷新目录后会自动纠正失效选择。
 - **更严格的工作簿修改：** 范围型修改先做 `5,000` 个单元格影响保护，成功后返回 `impact` 和读回的 `verification` 摘要。
+- **更紧凑的任务窗格：** 在 400px 和 320px 宽度下收紧固定区域，为对话和工作簿结果保留更多空间；正文保持 12px/17px，桌面端常用命中区域不小于 24px，并保留焦点和 reduced-motion 行为。
 
-这条开发线将发布到 GitHub `main`；`v0.0.2` 仍是当前最新的打包发行版。
+本发行版将以上已验证的 `main` 改动同步到 GitHub 和 Windows x64 启动器。
 
 ## 项目概述
 
@@ -45,7 +46,7 @@ ChatExcel 把一个受控的工具型 Agent 放到当前工作簿旁边。它可
 ## 真实界面预览
 
 <p align="center">
-  <img src="assets/screenshots/taskpane-400x900.png" alt="ChatExcel 任务窗格" width="390" />
+  <img src="assets/screenshots/taskpane-compact-400x900.png" alt="ChatExcel 紧凑任务窗格" width="390" />
   <img src="assets/screenshots/settings-400x900.png" alt="ChatExcel 提供方设置" width="390" />
 </p>
 
@@ -85,7 +86,7 @@ Microsoft Excel 任务窗格（Office.js）
 
 ### Windows 打包启动器（普通用户）
 
-1. 从 [GitHub Releases](https://github.com/aEboli/ChatExcel/releases/tag/v0.0.2) 下载 `ChatExcel-Launcher-0.0.2-win-x64.zip`。
+1. 从 [GitHub Releases](https://github.com/aEboli/ChatExcel/releases/tag/v0.0.3) 下载 `ChatExcel-Launcher-0.0.3-win-x64.zip`。
 2. 需要时先用旁边的 `.sha256` 文件校验，再完整解压整个目录。
 3. 双击 `ChatExcel Launcher.exe`。
 4. 在 Excel 的 `ChatEx` 功能区组点击 `Open ChatExcel`。
@@ -198,7 +199,7 @@ git diff --check
 
 ## 版本、更新日志与许可证
 
-- 最新打包发行版：[ChatExcel v0.0.2](https://github.com/aEboli/ChatExcel/releases/tag/v0.0.2)
+- 最新打包发行版：[ChatExcel v0.0.3](https://github.com/aEboli/ChatExcel/releases/tag/v0.0.3)
 - 更新日志：[CHANGELOG.zh-CN.md](CHANGELOG.zh-CN.md)
 - English overview：[README.md](README.md)
 - 当前尚未选择许可证；在组织外分发前请补充许可证文件。

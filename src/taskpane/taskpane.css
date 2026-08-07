@@ -70,10 +70,10 @@ p {
 .app-shell {
   display: flex;
   flex-direction: column;
-  gap: 7px;
+  gap: 5px;
   width: 100%;
   height: 100%;
-  padding: 7px;
+  padding: 5px;
   overflow: hidden;
   background: #e8eeec;
   isolation: isolate;
@@ -89,11 +89,11 @@ p {
 .topbar {
   display: grid;
   flex: 0 0 auto;
-  grid-template-columns: 32px minmax(0, 1fr) 42px;
-  gap: 9px;
+  grid-template-columns: 32px minmax(0, 1fr) 38px;
+  gap: 7px;
   align-items: center;
-  min-height: 54px;
-  padding: 7px 8px;
+  min-height: 44px;
+  padding: 5px 7px;
   border-radius: 8px;
 }
 
@@ -109,28 +109,28 @@ p {
 h1 {
   overflow: hidden;
   color: #13251b;
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 700;
-  line-height: 19px;
+  line-height: 18px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .workbook-status {
   display: flex;
-  gap: 6px;
+  gap: 5px;
   align-items: center;
   min-width: 0;
   margin-top: 1px;
   color: var(--muted);
-  font-size: 11px;
-  line-height: 16px;
+  font-size: 10px;
+  line-height: 14px;
 }
 
 .status-dot {
   flex: 0 0 auto;
-  width: 7px;
-  height: 7px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
   background: #7e8983;
   box-shadow: 0 0 0 2px rgba(126, 137, 131, 0.12);
@@ -161,8 +161,8 @@ h1 {
 .icon-button {
   display: inline-grid;
   place-items: center;
-  width: 42px;
-  height: 32px;
+  width: 38px;
+  height: 30px;
   padding: 0;
   border: 1px solid rgba(49, 70, 60, 0.12);
   border-radius: 999px;
@@ -171,8 +171,8 @@ h1 {
 }
 
 .icon-button img {
-  width: 19px;
-  height: 19px;
+  width: 18px;
+  height: 18px;
   opacity: 0.78;
 }
 
@@ -210,8 +210,8 @@ summary:focus-visible {
   display: flex;
   flex: 0 0 auto;
   flex-direction: column;
-  max-height: 31vh;
-  min-height: 43px;
+  max-height: 29vh;
+  min-height: 38px;
   overflow: hidden;
   border-radius: 8px;
 }
@@ -222,8 +222,8 @@ summary:focus-visible {
   align-items: center;
   justify-content: space-between;
   width: 100%;
-  min-height: 34px;
-  padding: 6px 9px;
+  min-height: 30px;
+  padding: 4px 8px;
   border: 0;
   color: #34423b;
   background: transparent;
@@ -233,7 +233,7 @@ summary:focus-visible {
 .section-title-wrap,
 .section-meta {
   display: flex;
-  gap: 6px;
+  gap: 5px;
   align-items: center;
 }
 
@@ -243,8 +243,8 @@ summary:focus-visible {
 
 .section-title-wrap img,
 .section-meta img {
-  width: 15px;
-  height: 15px;
+  width: 14px;
+  height: 14px;
   opacity: 0.68;
 }
 
@@ -269,11 +269,11 @@ summary:focus-visible {
 .history-banner {
   display: flex;
   flex: 0 0 auto;
-  gap: 8px;
+  gap: 6px;
   align-items: center;
   justify-content: space-between;
-  min-height: 30px;
-  padding: 4px 9px;
+  min-height: 28px;
+  padding: 3px 8px;
   border-top: 1px solid rgba(25, 103, 166, 0.18);
   border-bottom: 1px solid rgba(25, 103, 166, 0.18);
   color: #194f78;
@@ -290,7 +290,7 @@ summary:focus-visible {
 .history-preview {
   flex: 0 0 auto;
   min-height: 0;
-  max-height: 110px;
+  max-height: 100px;
   overflow: hidden;
   border-bottom: 1px solid rgba(25, 103, 166, 0.18);
   background: rgba(244, 250, 255, 0.78);
@@ -301,7 +301,7 @@ summary:focus-visible {
   gap: 6px;
   align-items: baseline;
   min-width: 0;
-  padding: 5px 9px 4px;
+  padding: 4px 8px 3px;
   color: #456275;
   font-size: 9px;
 }
@@ -317,10 +317,10 @@ summary:focus-visible {
 }
 
 .history-preview-body {
-  max-height: 84px;
+  max-height: 78px;
   min-height: 0;
   overflow: auto;
-  padding: 0 9px 8px;
+  padding: 0 8px 6px;
 }
 
 .history-preview-image {
@@ -380,6 +380,9 @@ summary:focus-visible {
 
 .text-button,
 .inline-button {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
   padding: 2px 4px;
   border: 0;
   color: #155e8e;
@@ -399,7 +402,7 @@ summary:focus-visible {
 .activity-empty {
   display: grid;
   place-items: center;
-  min-height: 38px;
+  min-height: 32px;
   color: #829089;
   font-size: 10px;
 }
@@ -411,11 +414,11 @@ summary:focus-visible {
 .activity-group-header {
   display: grid;
   grid-template-columns: 8px minmax(0, 1fr) auto;
-  gap: 7px;
+  gap: 6px;
   align-items: center;
   width: 100%;
-  min-height: 43px;
-  padding: 5px 9px;
+  min-height: 38px;
+  padding: 4px 8px;
   border: 0;
   color: #35413b;
   background: transparent;
@@ -467,7 +470,7 @@ summary:focus-visible {
 .activity-group-preview {
   color: #6a756f;
   font-size: 9px;
-  line-height: 13px;
+  line-height: 12px;
 }
 
 .activity-group-meta {
@@ -505,11 +508,11 @@ summary:focus-visible {
 .activity-row {
   display: grid;
   grid-template-columns: 8px minmax(0, 1fr) auto;
-  gap: 7px;
+  gap: 6px;
   align-items: center;
   width: 100%;
-  min-height: 35px;
-  padding: 3px 9px 3px 24px;
+  min-height: 32px;
+  padding: 2px 8px 2px 22px;
   border: 0;
   border-bottom: 1px solid rgba(49, 70, 60, 0.1);
   color: #35413b;
@@ -570,7 +573,7 @@ summary:focus-visible {
   min-width: 0;
   color: #6a756f;
   font-size: 10px;
-  line-height: 14px;
+  line-height: 13px;
 }
 
 .activity-target,
@@ -616,7 +619,7 @@ summary:focus-visible {
 .conversation {
   flex: 1 1 auto;
   min-height: 82px;
-  padding: 3px 2px 8px;
+  padding: 2px 1px 5px;
   overflow-y: auto;
   scrollbar-gutter: stable;
 }
@@ -624,10 +627,10 @@ summary:focus-visible {
 .recovery-notice {
   display: flex;
   flex: 0 0 auto;
-  gap: 8px;
+  gap: 6px;
   align-items: center;
   min-width: 0;
-  padding: 6px 8px;
+  padding: 5px 7px;
   border-left: 3px solid #a66d00;
   color: #624100;
   background: var(--amber-soft);
@@ -654,10 +657,10 @@ summary:focus-visible {
 .empty-state {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  min-height: 30px;
-  margin: 4px;
-  padding: 5px 8px;
+  gap: 5px;
+  min-height: 28px;
+  margin: 3px;
+  padding: 4px 7px;
   border: 1px solid rgba(49, 70, 60, 0.1);
   border-radius: 6px;
   color: #69766f;
@@ -665,13 +668,13 @@ summary:focus-visible {
 }
 
 .empty-state img {
-  width: 17px;
-  height: 17px;
+  width: 16px;
+  height: 16px;
   opacity: 0.42;
 }
 
 .empty-state strong {
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 650;
 }
 
@@ -679,8 +682,8 @@ summary:focus-visible {
   box-sizing: border-box;
   width: fit-content;
   max-inline-size: 66.667%;
-  margin: 6px 4px;
-  padding: 9px 12px;
+  margin: 4px 3px;
+  padding: 7px 10px;
   border: 1px solid rgba(49, 70, 60, 0.13);
   border-radius: 18px;
   color: #25312b;
@@ -688,7 +691,7 @@ summary:focus-visible {
   box-shadow: 0 4px 12px rgba(34, 54, 44, 0.05);
   backdrop-filter: blur(12px);
   font-size: 12px;
-  line-height: 18px;
+  line-height: 17px;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
@@ -724,7 +727,7 @@ summary:focus-visible {
   grid-template-columns: repeat(auto-fit, minmax(64px, 1fr));
   min-inline-size: 132px;
   gap: 5px;
-  margin-bottom: 7px;
+  margin-bottom: 5px;
 }
 
 .message-image-button {
@@ -748,14 +751,14 @@ summary:focus-visible {
   display: grid;
   justify-items: center;
   width: 100%;
-  margin: 8px 0;
+  margin: 6px 0;
   gap: 2px;
 }
 
 .action-flow-step.message.notice {
   max-inline-size: 92%;
   margin: 0;
-  padding: 6px 14px;
+  padding: 5px 12px;
   border-radius: 999px;
   text-align: center;
   box-shadow: 0 3px 9px rgba(102, 72, 9, 0.06);
@@ -763,15 +766,15 @@ summary:focus-visible {
 
 .action-flow-arrow {
   display: block;
-  width: 14px;
-  height: 14px;
+  width: 12px;
+  height: 12px;
   opacity: 0.58;
   transform: rotate(180deg);
 }
 
 .approval {
   flex: 0 0 auto;
-  padding: 8px 9px 9px;
+  padding: 7px 8px 8px;
   border: 1px solid rgba(154, 101, 0, 0.24);
   border-radius: 8px;
   background: rgba(255, 248, 221, 0.94);
@@ -837,13 +840,13 @@ summary:focus-visible {
   display: flex;
   gap: 7px;
   justify-content: flex-end;
-  margin-top: 8px;
+  margin-top: 6px;
 }
 
 .button {
   min-width: 66px;
-  min-height: 30px;
-  padding: 5px 12px;
+  min-height: 28px;
+  padding: 4px 10px;
   border: 1px solid #aeb8b3;
   border-radius: 6px;
   font-size: 11px;
@@ -868,16 +871,16 @@ summary:focus-visible {
 .composer-shell {
   position: relative;
   flex: 0 0 auto;
-  padding: 7px;
+  padding: 5px;
   border-radius: 8px;
 }
 
 .easter-footer {
   position: relative;
-  flex: 0 0 28px;
-  height: 28px;
-  min-height: 28px;
-  max-height: 28px;
+  flex: 0 0 24px;
+  height: 24px;
+  min-height: 24px;
+  max-height: 24px;
   overflow: hidden;
   border: 1px solid rgba(255, 255, 255, 0.74);
   border-radius: 8px;
@@ -890,7 +893,7 @@ summary:focus-visible {
   position: relative;
   z-index: 2;
   width: 100%;
-  height: 27px;
+  height: 24px;
   padding: 0;
   border: 0;
   background: transparent;
@@ -925,8 +928,8 @@ summary:focus-visible {
   z-index: 0;
   top: 1px;
   right: 10%;
-  width: 18px;
-  height: 18px;
+  width: 15px;
+  height: 15px;
   border-radius: 50%;
   background: rgba(255, 231, 171, 0.86);
   box-shadow: 0 0 10px rgba(255, 234, 181, 0.68);
@@ -1003,8 +1006,8 @@ summary:focus-visible {
   display: block;
   z-index: 3;
   bottom: 3px;
-  width: 24px;
-  height: 24px;
+  width: 20px;
+  height: 20px;
 }
 
 .easter-walker {
@@ -1133,18 +1136,18 @@ summary:focus-visible {
 .composer textarea {
   display: block;
   width: 100%;
-  height: 34px;
-  min-height: 34px;
+  height: 32px;
+  min-height: 32px;
   max-height: 118px;
   resize: none;
-  padding: 8px 9px 3px;
+  padding: 7px 8px 2px;
   overflow-y: auto;
   border: 0;
   border-radius: 7px 7px 0 0;
   color: var(--ink);
   background: transparent;
   font-size: 12px;
-  line-height: 18px;
+  line-height: 17px;
 }
 
 .composer textarea::placeholder {
@@ -1160,7 +1163,7 @@ summary:focus-visible {
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 4px;
   align-items: center;
-  padding: 3px 4px 4px;
+  padding: 2px 3px 3px;
 }
 
 .toolbar-group {
@@ -1204,8 +1207,8 @@ summary:focus-visible {
   gap: 4px;
   align-items: center;
   min-width: 0;
-  height: 30px;
-  padding: 0 7px;
+  height: 28px;
+  padding: 0 6px;
   border: 1px solid rgba(49, 70, 60, 0.1);
   border-radius: 999px;
   color: #3c4943;
@@ -1250,8 +1253,8 @@ summary:focus-visible {
 .toolbar-button > img,
 .mode-button > img {
   flex: 0 0 auto;
-  width: 15px;
-  height: 15px;
+  width: 14px;
+  height: 14px;
   opacity: 0.72;
 }
 
@@ -1397,8 +1400,8 @@ summary:focus-visible {
   display: inline-grid;
   flex: 0 0 auto;
   place-items: center;
-  width: 23px;
-  height: 23px;
+  width: 21px;
+  height: 21px;
   border: 1px solid transparent;
   border-radius: 50%;
   color: #3c4943;
@@ -1536,7 +1539,7 @@ summary:focus-visible {
 .run-status {
   min-height: 0;
   overflow: hidden;
-  padding: 0 7px 4px;
+  padding: 0 6px 3px;
   color: #69766f;
   font-size: 9px;
   line-height: 13px;
@@ -1551,7 +1554,7 @@ summary:focus-visible {
 .control-menu {
   position: absolute;
   z-index: 12;
-  bottom: calc(100% + 7px);
+  bottom: calc(100% + 5px);
   min-width: 126px;
   max-height: 210px;
   padding: 4px;
@@ -1630,7 +1633,7 @@ summary:focus-visible {
   left: 0;
   width: min(236px, calc(100vw - 16px));
   max-height: min(320px, calc(100vh - 70px));
-  padding: 5px;
+  padding: 4px;
   overflow-y: auto;
 }
 
@@ -1643,12 +1646,12 @@ summary:focus-visible {
 .model-settings-reset,
 .model-settings-back {
   display: flex;
-  gap: 8px;
+  gap: 7px;
   align-items: center;
   width: 100%;
   min-width: 0;
-  min-height: 36px;
-  padding: 7px 8px;
+  min-height: 34px;
+  padding: 6px 7px;
   border: 0;
   border-radius: 6px;
   color: #35413b;
@@ -1765,11 +1768,11 @@ summary:focus-visible {
 
 .menu-option {
   display: flex;
-  gap: 7px;
+  gap: 6px;
   align-items: center;
   width: 100%;
-  min-height: 31px;
-  padding: 5px 7px;
+  min-height: 29px;
+  padding: 4px 6px;
   border: 0;
   border-radius: 5px;
   color: #35413b;
@@ -1829,8 +1832,8 @@ summary:focus-visible {
   inset: 0;
   display: flex;
   flex-direction: column;
-  gap: 7px;
-  padding: 7px;
+  gap: 5px;
+  padding: 5px;
   overflow: hidden;
   background: #e8eeec;
   animation: settings-in 180ms ease-out both;
@@ -1839,17 +1842,17 @@ summary:focus-visible {
 .settings-header {
   display: grid;
   flex: 0 0 auto;
-  grid-template-columns: 42px minmax(0, 1fr);
-  gap: 8px;
+  grid-template-columns: 38px minmax(0, 1fr);
+  gap: 7px;
   align-items: center;
-  min-height: 54px;
-  padding: 6px 8px;
+  min-height: 44px;
+  padding: 5px 7px;
   border-radius: 8px;
 }
 
 .settings-header h2 {
-  font-size: 15px;
-  line-height: 19px;
+  font-size: 14px;
+  line-height: 18px;
 }
 
 .settings-header span {
@@ -1871,7 +1874,7 @@ summary:focus-visible {
 }
 
 .settings-section {
-  padding: 12px 11px;
+  padding: 10px 9px;
   border-bottom: 1px solid var(--line);
 }
 
@@ -1879,7 +1882,7 @@ summary:focus-visible {
 .field-heading,
 .field-grid {
   display: flex;
-  gap: 10px;
+  gap: 8px;
   align-items: center;
   justify-content: space-between;
 }
@@ -1907,8 +1910,8 @@ summary:focus-visible {
 .switch {
   position: relative;
   flex: 0 0 auto;
-  width: 36px;
-  height: 20px;
+  width: 40px;
+  height: 24px;
 }
 
 .switch input {
@@ -1918,20 +1921,20 @@ summary:focus-visible {
 
 .switch span {
   display: block;
-  width: 36px;
-  height: 20px;
+  width: 40px;
+  height: 24px;
   border: 1px solid #919d97;
-  border-radius: 10px;
+  border-radius: 12px;
   background: #d9dfdc;
   transition: background 150ms ease;
 }
 
 .switch span::after {
   position: absolute;
-  top: 3px;
-  left: 3px;
-  width: 14px;
-  height: 14px;
+  top: 4px;
+  left: 4px;
+  width: 16px;
+  height: 16px;
   border-radius: 50%;
   background: #ffffff;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
@@ -1953,8 +1956,8 @@ summary:focus-visible {
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 2px;
   align-items: center;
-  margin-top: 10px;
-  padding-top: 9px;
+  margin-top: 8px;
+  padding-top: 7px;
   border-top: 1px solid rgba(49, 70, 60, 0.1);
 }
 
@@ -1978,20 +1981,20 @@ summary:focus-visible {
 
 .custom-settings {
   display: grid;
-  gap: 6px;
+  gap: 5px;
 }
 
 .protocol-field {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1.18fr);
-  gap: 8px;
+  gap: 6px;
   align-items: end;
 }
 
 .protocol-select-field {
   display: grid;
   min-width: 0;
-  gap: 6px;
+  gap: 5px;
 }
 
 .protocol-model-examples {
@@ -2035,8 +2038,8 @@ summary:focus-visible {
 .custom-settings select {
   width: 100%;
   min-width: 0;
-  height: 32px;
-  padding: 5px 8px;
+  height: 30px;
+  padding: 4px 7px;
   border: 1px solid rgba(49, 70, 60, 0.25);
   border-radius: 5px;
   color: #25312b;
@@ -2047,9 +2050,9 @@ summary:focus-visible {
 .settings-section > input[type="number"] {
   width: 100%;
   min-width: 0;
-  height: 32px;
-  margin-top: 6px;
-  padding: 5px 8px;
+  height: 30px;
+  margin-top: 5px;
+  padding: 4px 7px;
   border: 1px solid rgba(49, 70, 60, 0.25);
   border-radius: 5px;
   color: #25312b;
@@ -2073,12 +2076,12 @@ summary:focus-visible {
 
 .field-grid input,
 .field-grid select {
-  margin-top: 5px;
+  margin-top: 4px;
 }
 
 .settings-message {
   min-height: 18px;
-  padding: 7px 11px 0;
+  padding: 6px 9px 0;
   color: #5f6c65;
   font-size: 10px;
   line-height: 15px;
@@ -2097,7 +2100,7 @@ summary:focus-visible {
   position: sticky;
   bottom: 0;
   margin-top: auto;
-  padding: 9px 11px 11px;
+  padding: 7px 9px 9px;
   border-top: 1px solid var(--line);
   background: rgba(249, 251, 250, 0.94);
   backdrop-filter: blur(12px);
@@ -2285,13 +2288,19 @@ summary:focus-visible {
 
 @media (max-width: 439px) {
   .app-shell {
-    gap: 5px;
-    padding: 5px;
+    gap: 4px;
+    padding: 4px;
   }
 
   .topbar,
   .settings-header {
-    min-height: 50px;
+    min-height: 44px;
+    padding-top: 4px;
+    padding-bottom: 4px;
+  }
+
+  .composer-shell {
+    padding: 4px;
   }
 
   .primary-controls {
@@ -2316,14 +2325,14 @@ summary:focus-visible {
 @media (min-width: 540px) {
   .app-shell,
   .settings-view {
-    padding: 9px;
+    padding: 7px;
   }
 
   .topbar,
   .composer-shell,
   .settings-header {
-    padding-right: 12px;
-    padding-left: 12px;
+    padding-right: 10px;
+    padding-left: 10px;
   }
 
 }
@@ -2338,7 +2347,7 @@ summary:focus-visible {
   }
 
   .topbar {
-    min-height: 48px;
+    min-height: 42px;
   }
 }
 
