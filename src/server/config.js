@@ -11,6 +11,7 @@ export const REASONING_EFFORTS = Object.freeze([
   "medium",
   "high",
   "xhigh",
+  "ultra",
   "max",
 ]);
 
@@ -92,7 +93,7 @@ export function buildResponsesUrl(rawBaseUrl, queryParams) {
   return { baseUrl, responsesUrl: responsesUrl.toString() };
 }
 
-function resolveToken(provider, env) {
+function resolveToken(provider, env, auth = null) {
   if (provider.env_key !== undefined) {
     const envKey = requiredString(
       provider.env_key,
@@ -113,6 +114,12 @@ function resolveToken(provider, env) {
     typeof provider.experimental_bearer_token !== "string" ||
     provider.experimental_bearer_token.trim() === ""
   ) {
+    const authToken = provider.requires_openai_auth === true && auth
+      ? auth.OPENAI_API_KEY
+      : null;
+    if (typeof authToken === "string" && authToken.trim() !== "") {
+      return { token: authToken.trim(), tokenSource: "codex-auth" };
+    }
     throw new ConfigError("CONFIG_TOKEN_MISSING", "当前提供方未配置可用的模型令牌。" );
   }
 
@@ -130,7 +137,15 @@ export function resolveCodexConfigPath({ env = process.env, homeDir = homedir() 
   return join(codexHome, "config.toml");
 }
 
-export function parseCodexConfig(source, { env = process.env, configPath = "config.toml" } = {}) {
+export function resolveCodexAuthPath({ env = process.env, homeDir = homedir() } = {}) {
+  const codexHome =
+    typeof env.CODEX_HOME === "string" && env.CODEX_HOME.trim() !== ""
+      ? env.CODEX_HOME.trim()
+      : join(homeDir, ".codex");
+  return join(codexHome, "auth.json");
+}
+
+export function parseCodexConfig(source, { env = process.env, configPath = "config.toml", auth = null } = {}) {
   let document;
   try {
     document = parse(source);
@@ -176,7 +191,7 @@ export function parseCodexConfig(source, { env = process.env, configPath = "conf
     "当前提供方未配置 base_url。",
   );
   const { baseUrl, responsesUrl } = buildResponsesUrl(rawBaseUrl, provider.query_params);
-  const { token, tokenSource } = resolveToken(provider, env);
+  const { token, tokenSource } = resolveToken(provider, env, auth);
   const reasoningEffort = optionalEnum(
     document.model_reasoning_effort,
     REASONING_EFFORTS,
@@ -221,6 +236,7 @@ export function parseCodexConfig(source, { env = process.env, configPath = "conf
 
 export async function loadCodexConfig({ env = process.env, homeDir = homedir() } = {}) {
   const configPath = resolveCodexConfigPath({ env, homeDir });
+  const authPath = resolveCodexAuthPath({ env, homeDir });
   let source;
   try {
     source = await readFile(configPath, "utf8");
@@ -229,7 +245,20 @@ export async function loadCodexConfig({ env = process.env, homeDir = homedir() }
       cause: error,
     });
   }
-  return parseCodexConfig(source, { env, configPath });
+  let auth = null;
+  try {
+    auth = JSON.parse(await readFile(authPath, "utf8"));
+  } catch (error) {
+    if (error?.code !== "ENOENT") {
+      throw new ConfigError("CONFIG_AUTH_INVALID", "当前用户的 Codex auth.json 无法解析。", {
+        cause: error,
+      });
+    }
+  }
+  return Object.freeze({
+    ...(parseCodexConfig(source, { env, configPath, auth })),
+    cliSource: "codex",
+  });
 }
 
 export function toPublicConfig(config) {
@@ -249,7 +278,10 @@ export function toPublicConfig(config) {
     reasoningEffort: config.reasoningEffort,
     verbosity: config.verbosity,
     contextWindow: config.contextWindow ?? DEFAULT_CONTEXT_WINDOW,
+    maxOutputLabel: config.maxOutputLabel ?? null,
+    maxOutputSource: config.maxOutputSource ?? null,
     credentialConfigured: Boolean(config.token),
     tokenSource: config.tokenSource,
+    systemSource: config.cliSource ?? null,
   };
 }

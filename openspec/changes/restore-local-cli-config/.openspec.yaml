@@ -1,0 +1,3 @@
+schema: spec-driven
+created: 2026-08-18
+goal: 在本机安全复用可用的 Codex 或 Claude CLI 配置，同时在系统配置异常时保持自定义 API 可修复

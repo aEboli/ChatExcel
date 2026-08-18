@@ -114,10 +114,14 @@ test("官方目录补全 DeepSeek V4 的上下文和实际思考档位", () => {
 
   assert.equal(byId.get("deepseek-v4-flash").contextWindow, 1_000_000);
   assert.equal(byId.get("deepseek-v4-flash").contextSource, "official");
+  assert.equal(byId.get("deepseek-v4-flash").maxOutputLabel, "384K");
+  assert.equal(byId.get("deepseek-v4-flash").maxOutputSource, "official");
   assert.deepEqual(byId.get("deepseek-v4-flash").reasoningEfforts, ["none", "low", "high", "max"]);
   assert.equal(byId.get("deepseek-v4-flash").defaultReasoningEffort, "high");
   assert.equal(byId.get("deepseek-v4-flash").reasoningSource, "official");
   assert.equal(byId.get("deepseek-v4-pro").contextWindow, 1_000_000);
+  assert.equal(byId.get("deepseek-v4-pro").maxOutputLabel, "384K");
+  assert.equal(byId.get("deepseek-v4-pro").maxOutputSource, "official");
   assert.deepEqual(byId.get("deepseek-v4-pro").reasoningEfforts, ["none", "high", "max"]);
   assert.equal(byId.get("deepseek-v4-pro").defaultReasoningEffort, "high");
   assert.equal(
@@ -134,6 +138,7 @@ test("官方目录只匹配已核验的模型 ID", () => {
       { id: "qwen3.7-max-2026-05-17" },
       { id: "gpt-5.4-mini" },
       { id: "deepseek-v4-flash-preview" },
+      { id: "deepseek-v4-flash-0731" },
     ],
   }, "openai-chat-completions");
   const byId = new Map(models.map((model) => [model.id, model]));
@@ -144,6 +149,9 @@ test("官方目录只匹配已核验的模型 ID", () => {
   assert.equal(byId.get("qwen3.7-max-2026-05-17").contextSource, undefined);
   assert.equal(byId.get("gpt-5.4-mini").contextSource, undefined);
   assert.equal(byId.get("deepseek-v4-flash-preview").contextSource, undefined);
+  assert.equal(byId.get("deepseek-v4-flash-0731").contextSource, undefined);
+  assert.equal(byId.get("deepseek-v4-flash-0731").maxOutputLabel, undefined);
+  assert.equal(byId.get("deepseek-v4-flash-0731").maxOutputSource, undefined);
 });
 
 test("DeepSeek V4 Flash 的默认值和会话级思考选择都由官方目录校验", async () => {
@@ -164,6 +172,9 @@ test("DeepSeek V4 Flash 的默认值和会话级思考选择都由官方目录�
   const disabled = await store.loadConfig({ reasoningEffort: "none" });
 
   assert.equal(state.config.contextWindow, 1_000_000);
+  assert.equal(state.config.maxOutputLabel, "384K");
+  assert.equal(state.config.maxOutputSource, "official");
+  assert.equal(state.models[0].maxOutputLabel, "384K");
   assert.equal(state.config.reasoningEffort, "high");
   assert.deepEqual(state.models[0].reasoningEfforts, ["none", "low", "high", "max"]);
   assert.equal(disabled.reasoningEffort, "none");
@@ -757,4 +768,33 @@ test("自定义 Anthropic 配置和模型目录在重启及模式切换后恢复
   assert.equal(systemState.source, "system");
   assert.equal(systemState.settings.protocol, "anthropic-messages");
   assert.equal(systemState.settings.models[0].id, "claude-sonnet");
+});
+
+test("系统配置来源可选择 Claude CLI 并持久化", async () => {
+  let requestedSource = null;
+  const settingsStore = memorySettingsStore();
+  const store = new RuntimeConfigStore({
+    systemLoader: async ({ source } = {}) => {
+      requestedSource = source;
+      return {
+        ...systemConfig(),
+        cliSource: source === "claude" ? "claude" : "codex",
+        providerName: source === "claude" ? "Claude CLI" : "Codex CLI",
+        protocol: source === "claude" ? "anthropic-messages" : "openai-responses",
+        wireApi: source === "claude" ? "messages" : "responses",
+        endpoint: source === "claude"
+          ? "https://provider.example/v1/messages"
+          : "https://provider.example/v1/responses",
+        responsesUrl: source === "claude" ? null : "https://provider.example/v1/responses",
+      };
+    },
+    settingsStore,
+  });
+
+  const state = await store.update({ useSystemConfig: true, systemSource: "claude", maxSteps: 100 });
+
+  assert.equal(requestedSource, "claude");
+  assert.equal(state.config.providerName, "Claude CLI");
+  assert.equal(state.settings.systemSource, "claude");
+  assert.equal(settingsStore.value.systemSource, "claude");
 });

@@ -117,6 +117,7 @@ export class SettingsStore {
 
   async save({
     useSystemConfig,
+    systemSource = "auto",
     custom,
     maxSteps = DEFAULT_MAX_STEPS,
     approvalMode = DEFAULT_APPROVAL_MODE,
@@ -144,6 +145,7 @@ export class SettingsStore {
     const payload = {
       version: 1,
       useSystemConfig,
+      systemSource,
       maxSteps: normalizedMaxSteps,
       approvalMode,
       custom: custom

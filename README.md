@@ -12,11 +12,20 @@
 
 Inspect sheets, reason over workbook context, paste reference images, and perform controlled Excel edits from one compact task pane.
 
-Current release: `v0.0.3` · source, Windows launcher, and release assets are version-aligned
+Latest packaged release: `v0.0.3` · current source snapshot: `v0.0.4` (not yet packaged as a GitHub Release)
 
 </div>
 
 > The Chinese README is the primary, more detailed guide: [README.zh-CN.md](README.zh-CN.md). This English page is a concise project overview.
+
+## What's new in the v0.0.4 source snapshot
+
+This source synchronization does not publish a new Windows launcher package. `v0.0.3` remains the latest downloadable GitHub Release.
+
+- **Recoverable system configuration:** Settings can use Automatic (Codex CLI first), Codex CLI, or Claude CLI sources. Codex can load `OPENAI_API_KEY` from its sibling `auth.json`, while Claude uses the current user's Anthropic settings. Tokens remain in the local service.
+- **Source setup launcher:** `首次安装并启动 ChatExcel.cmd` provides a Windows install, repair, and uninstall menu for a source checkout. It validates Node.js, dependencies, the development certificate, the manifest, and sideload readiness before opening Excel.
+- **Task-pane recovery and image drop:** A failed system configuration keeps the custom API form available. PNG, JPEG, and WebP files can also be dropped into the composer, alongside the existing clipboard flow.
+- **Safer sideload readiness:** The sideload script starts or reuses the project-local service before registering the add-in and opening Excel.
 
 ## What's new in v0.0.3
 
@@ -95,6 +104,8 @@ The package includes its own Node.js runtime and launcher dependencies. The targ
 
 ### Source development
 
+For a Windows source checkout, double-click `首次安装并启动 ChatExcel.cmd` in the repository root. The numeric menu offers `1` to install or reinstall and sideload ChatExcel in Excel, `2` to unregister this project's add-in, stop its local service, and remove project dependencies, and `3` to exit. Close all Excel windows before uninstalling; the source files and local development certificate are kept.
+
 ```powershell
 git clone https://github.com/aEboli/ChatExcel.git
 cd ChatExcel
@@ -134,6 +145,8 @@ wire_api = "responses"
 env_key = "LOCAL_MODEL_TOKEN"
 ```
 
+Settings also offers Automatic (Codex CLI first), Codex CLI, and Claude CLI sources. Codex reads the user-level `.codex/config.toml` and its sibling `auth.json`; Claude reads Anthropic settings from `.claude/settings.json`. Tokens stay in the local service and never enter the Excel task pane.
+
 For a custom provider, disable system WorkBuddy configuration in Settings, choose a protocol, enter the API root and key, discover models, then select context, reasoning, and the maximum step count. Non-secret settings are stored in `%APPDATA%\ChatExcel\settings.json`; the API key is encrypted with the current Windows user's DPAPI and plaintext is kept only in the local process.
 
 ## Privacy and safety boundaries
@@ -152,6 +165,7 @@ ChatExcel/
 |-- assets/                  # Icons, local UI assets, and screenshots
 |-- docs/                    # Verification notes
 |-- launcher/                # .NET Windows launcher
+|-- native-addin/            # Experimental local native-host probes
 |-- openspec/                # Current specifications and archived changes
 |-- scripts/                 # Certificates, lifecycle, sideload, build, and package scripts
 |-- src/server/              # Local HTTPS service, sessions, recovery, and protocol adapters
@@ -184,6 +198,7 @@ git diff --check
 - The current release is Windows x64 and uses a trusted local Office development certificate.
 - Unknown provider models use conservative automatic reasoning behavior until verified metadata is available.
 - Image attachments depend on the selected upstream model or gateway supporting compatible multimodal input.
+- `native-addin/` contains experimental local probes only; it is not bundled in the Windows launcher or supported as a production migration path.
 - Marketplace publication, multi-user cloud hosting, macros, VBA, Power Query, PivotTable automation, snapshots, and destructive rollback are outside the current scope.
 
 ## Release and license

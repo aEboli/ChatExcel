@@ -9,6 +9,7 @@ import {
   dataUrlByteLength,
   formatAttachmentSize,
   prepareImageFile,
+  transferHasFiles,
 } from "../src/taskpane/image-attachments.js";
 
 function dataUrl(mimeType, bytes) {
@@ -90,6 +91,15 @@ test("从剪贴板 files 和 items 读取图片并去重，只保留支持类型
   });
 
   assert.deepEqual(files, [png, jpeg]);
+});
+
+test("识别拖放的 Files 类型而不接管文字或链接拖拽", () => {
+  assert.equal(transferHasFiles({ types: { contains: (type) => type === "Files" } }), true);
+  assert.equal(transferHasFiles({ types: ["text/plain", "Files"] }), true);
+  assert.equal(transferHasFiles({ files: [{ type: "image/png" }], types: [] }), true);
+  assert.equal(transferHasFiles({ types: ["text/plain", "text/uri-list"] }), false);
+  assert.equal(transferHasFiles({ types: [] }), false);
+  assert.equal(transferHasFiles(null), false);
 });
 
 test("小图片保留原始 data URL 并返回完整元数据", async () => {

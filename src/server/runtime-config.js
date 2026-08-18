@@ -1,10 +1,15 @@
 import {
   buildResponsesUrl,
   DEFAULT_CONTEXT_WINDOW,
-  loadCodexConfig,
   REASONING_EFFORTS,
   toPublicConfig,
 } from "./config.js";
+import {
+  DEFAULT_SYSTEM_CONFIG_SOURCE,
+  isSystemConfigSource,
+  loadSystemConfig,
+  SYSTEM_CONFIG_SOURCES,
+} from "./system-config.js";
 import {
   DEFAULT_PROTOCOL,
   buildProtocolEndpoints,
@@ -123,6 +128,10 @@ function modelCatalogEntry(protocol, id, model) {
       id,
       contextWindow: official.contextWindow,
       contextSource: "official",
+      ...(official.maxOutputLabel ? {
+        maxOutputLabel: official.maxOutputLabel,
+        maxOutputSource: official.maxOutputSource ?? "official",
+      } : {}),
       reasoningEfforts: official.reasoningEfforts,
       compatibleReasoningEfforts: [],
       reasoningMode: official.reasoningMode,
@@ -225,7 +234,7 @@ function cloneCatalog(catalog) {
 
 export class RuntimeConfigStore {
   constructor({
-    systemLoader = loadCodexConfig,
+    systemLoader = loadSystemConfig,
     fetchImpl = globalThis.fetch,
     discoveryTimeoutMs = MODEL_DISCOVERY_TIMEOUT_MS,
     connectivityTimeoutMs = PROVIDER_CONNECTIVITY_TIMEOUT_MS,
@@ -243,6 +252,7 @@ export class RuntimeConfigStore {
     this.connectivityTimeoutMs = connectivityTimeoutMs;
     this.settingsStore = settingsStore;
     this.mode = "system";
+    this.systemSource = DEFAULT_SYSTEM_CONFIG_SOURCE;
     this.customConfig = null;
     this.catalogs = { system: null, custom: null };
     this.lastCustomDiscovery = null;
@@ -273,6 +283,13 @@ export class RuntimeConfigStore {
     } catch (error) {
       this.settingsError ??= error;
       this.approvalMode = DEFAULT_APPROVAL_MODE;
+    }
+    if (persisted?.systemSource !== undefined) {
+      if (!isSystemConfigSource(persisted.systemSource)) {
+        this.settingsError ??= new RuntimeConfigError("SYSTEM_CONFIG_SOURCE_INVALID", "系统 CLI 配置来源无效。" );
+      } else {
+        this.systemSource = persisted.systemSource;
+      }
     }
     const custom = persisted?.custom;
     if (!custom || typeof custom !== "object") return;
@@ -341,6 +358,7 @@ export class RuntimeConfigStore {
       : null;
     await this.settingsStore.save({
       useSystemConfig: this.mode === "system",
+      systemSource: this.systemSource,
       maxSteps: this.maxSteps,
       approvalMode: this.approvalMode,
       custom,
@@ -349,7 +367,9 @@ export class RuntimeConfigStore {
 
   async loadConfig(options = {}) {
     await this.ready;
-    const baseConfig = this.mode === "system" ? await this.systemLoader() : this.customConfig;
+    const baseConfig = this.mode === "system"
+      ? await this.systemLoader({ source: this.systemSource })
+      : this.customConfig;
     if (!baseConfig) {
       throw new RuntimeConfigError("CUSTOM_CONFIG_MISSING", "自定义配置尚未保存。", 503);
     }
@@ -387,6 +407,8 @@ export class RuntimeConfigStore {
       ...normalizedConfig,
       model,
       reasoningEffort,
+      maxOutputLabel: modelEntry.maxOutputLabel ?? null,
+      maxOutputSource: modelEntry.maxOutputSource ?? null,
       contextWindow: isCurrentModel && (
         modelEntry.contextSource !== "official" || normalizedConfig.contextWindowConfigured === true
       )
@@ -414,11 +436,15 @@ export class RuntimeConfigStore {
         defaultReasoningEffort: currentModel.defaultReasoningEffort,
         thinkingToggle: currentModel.thinkingToggle === true,
         contextSource: currentModel.contextSource ?? null,
+        maxOutputLabel: currentModel.maxOutputLabel ?? null,
+        maxOutputSource: currentModel.maxOutputSource ?? null,
       },
       models,
       protocols: protocolOptions(),
       settings: {
         useSystemConfig: this.mode === "system",
+        systemSource: this.systemSource,
+        systemSources: SYSTEM_CONFIG_SOURCES,
         protocol: custom?.protocol ?? DEFAULT_PROTOCOL,
         apiUrl: custom?.baseUrl ?? "",
         model: custom?.model ?? config.model,
@@ -450,10 +476,28 @@ export class RuntimeConfigStore {
       throw new RuntimeConfigError("MAX_STEPS_INVALID", "最大步骤数配置无效。");
     }
     if (settings.useSystemConfig === true) {
+      const previousSource = this.systemSource;
+      const previousMode = this.mode;
+      const previousMaxSteps = this.maxSteps;
+      const nextSource = settings.systemSource === undefined
+        ? previousSource
+        : settings.systemSource;
+      if (!isSystemConfigSource(nextSource)) {
+        throw new RuntimeConfigError("SYSTEM_CONFIG_SOURCE_INVALID", "系统 CLI 配置来源无效。" );
+      }
+      this.systemSource = nextSource;
       this.maxSteps = maxSteps;
       this.mode = "system";
-      await this.#persistState();
-      return this.getPublicState();
+      try {
+        await this.loadConfig();
+        await this.#persistState();
+        return this.getPublicState();
+      } catch (error) {
+        this.systemSource = previousSource;
+        this.mode = previousMode;
+        this.maxSteps = previousMaxSteps;
+        throw error;
+      }
     }
     if (settings.useSystemConfig !== false) {
       throw new RuntimeConfigError("SETTINGS_INVALID", "请选择是否使用系统 Codex 配置。" );
@@ -565,7 +609,13 @@ export class RuntimeConfigStore {
     let protocol;
     let source;
     if (useSystemConfig) {
-      config = await this.systemLoader();
+      const systemSource = settings.systemSource === undefined
+        ? this.systemSource
+        : settings.systemSource;
+      if (!isSystemConfigSource(systemSource)) {
+        throw new RuntimeConfigError("SYSTEM_CONFIG_SOURCE_INVALID", "系统 CLI 配置来源无效。" );
+      }
+      config = await this.systemLoader({ source: systemSource });
       protocol = protocolFromConfig(config);
       baseUrl = config.baseUrl;
       token = config.token;

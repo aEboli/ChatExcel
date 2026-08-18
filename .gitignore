@@ -11,3 +11,6 @@ launcher/obj/
 tests/native-smoke/bin/
 tests/native-smoke/obj/
 assets/screenshots/reference-*.png
+native-addin/vsto/Properties/*.pfx
+native-addin/vsto/Properties/*.cer
+native-addin/*.snk

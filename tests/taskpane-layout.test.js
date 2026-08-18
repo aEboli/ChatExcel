@@ -11,18 +11,31 @@ const [taskpaneHtml, taskpaneJs, taskpaneCss, manifest, historyPreview, modelSel
   readFile(new URL("../src/taskpane/model-selection.js", import.meta.url), "utf8"),
 ]);
 
-test("任务窗格提供剪贴板图片附件、放大预览和窄窗格布局", () => {
+test("任务窗格提供剪贴板和拖入图片附件、放大预览及窄窗格布局", () => {
   assert.match(taskpaneHtml, /id="attachment-error"[^>]+role="alert"/);
   assert.match(taskpaneHtml, /id="attachment-list"[^>]+aria-label="待发送图片"/);
+  assert.match(taskpaneHtml, /id="image-drop-hint"[^>]+role="status"/);
   assert.match(taskpaneHtml, /id="image-preview-modal"/);
   assert.match(taskpaneHtml, /id="image-preview-close"[^>]+aria-label="关闭图片预览"/);
   assert.match(taskpaneJs, /clipboardImageFiles\(clipboardData\)/);
+  assert.match(taskpaneJs, /transferHasFiles,\s*\n\}\s*from "\.\/image-attachments\.js"/);
   assert.match(taskpaneJs, /promptInput\.addEventListener\("paste"/);
+  assert.match(taskpaneJs, /appShell\.addEventListener\("dragenter", handleImageDragEnter\)/);
+  assert.match(taskpaneJs, /appShell\.addEventListener\("dragover", handleImageDragOver\)/);
+  assert.match(taskpaneJs, /appShell\.addEventListener\("dragleave", handleImageDragLeave\)/);
+  assert.match(taskpaneJs, /appShell\.addEventListener\("drop", handleImageDrop\)/);
+  assert.match(taskpaneJs, /function handleImageDrop\(event\)[\s\S]*?clipboardImageFiles\(transferData\)[\s\S]*?addSelectedImages\(files/);
+  assert.match(taskpaneJs, /function imageDropAvailable\(\)[\s\S]*?!uiBusy[\s\S]*?settingsView\.hidden[\s\S]*?confirmModal\.hidden[\s\S]*?imagePreviewModal\.hidden/);
+  assert.match(taskpaneJs, /function clearImageDropTarget\(\)[\s\S]*?imageDropDepth = 0/);
+  assert.match(taskpaneJs, /function setBusy\(busy\) \{[\s\S]*?clearImageDropTarget\(\)/);
+  assert.match(taskpaneJs, /globalThis\.addEventListener\?\.\("blur", clearImageDropTarget\)/);
   assert.match(taskpaneJs, /clipboardData\?\.getData\?\.\("text\/plain"\)/);
   assert.match(taskpaneJs, /message === "" && attachments\.length === 0/);
   assert.match(taskpaneJs, /elements\.imagePreviewClose\.addEventListener\("click", closeImagePreview\)/);
   assert.match(taskpaneJs, /if \(!elements\.imagePreviewModal\.hidden\) \{[\s\S]*?closeImagePreview\(\)/);
   assert.match(taskpaneCss, /\.attachment-list\s*\{[\s\S]*?overflow-x:\s*auto;/);
+  assert.match(taskpaneCss, /\.composer\.is-image-drop-target\s*\{[\s\S]*?border-color:/);
+  assert.match(taskpaneCss, /\.image-drop-hint\s*\{[\s\S]*?position:\s*absolute;[\s\S]*?min-width:\s*0;[\s\S]*?overflow-wrap:\s*anywhere;/);
   assert.match(taskpaneCss, /\.attachment-item\s*\{[\s\S]*?flex:\s*0\s+0\s+66px;/);
   assert.match(taskpaneCss, /\.image-preview-backdrop\s*\{[\s\S]*?position:\s*fixed;/);
   assert.match(taskpaneCss, /\.composer-toolbar\s*\{[\s\S]*grid-template-columns:\s*minmax\(0,\s*1fr\)\s+auto;/);
@@ -31,30 +44,51 @@ test("任务窗格提供剪贴板图片附件、放大预览和窄窗格布局",
   assert.doesNotMatch(emptyStateRule, /height:\s*100%/);
 });
 
-test("页脚彩蛋在固定高度内展示田野跑步场景", async () => {
+test("页脚多人赛跑在固定高度内展示六名本地人物", async () => {
   assert.match(taskpaneHtml, /class="easter-sun"/);
   assert.match(taskpaneHtml, /class="easter-hills"/);
   assert.match(taskpaneHtml, /class="easter-field"/);
   assert.match(taskpaneHtml, /class="easter-poles"/);
-  assert.equal((taskpaneHtml.match(/class="easter-walker walker-/g) ?? []).length, 6);
+  const runners = [
+    "runner-coral.webp",
+    "runner-white-dress.webp",
+    "runner-white-shirt.webp",
+    "runner-coral-wide.webp",
+    "runner-pony-close.webp",
+    "runner-sunset-wide.webp",
+  ];
+  assert.equal((taskpaneHtml.match(/class="easter-walker /g) ?? []).length, runners.length);
+  for (const runner of runners) assert.match(taskpaneHtml, new RegExp(`easter-characters/${runner.replace(".", "\\.")}`));
+  assert.match(taskpaneHtml, /id="easter-count"/);
+  assert.match(taskpaneHtml, /id="easter-stage"/);
+  assert.match(taskpaneHtml, /id="easter-status"[^>]+aria-live="polite"/);
   assert.doesNotMatch(taskpaneHtml, /class="easter-brand"/);
-  assert.match(taskpaneHtml, /aria-label="打开 ChatEx 页脚彩蛋"/);
-  const characterPaths = [...taskpaneHtml.matchAll(/src="(\/assets\/easter-characters\/[^"]+\.webp)"/g)].map((match) => match[1]);
-  assert.deepEqual(characterPaths, [
-    "/assets/easter-characters/runner-coral.webp",
-    "/assets/easter-characters/runner-white-dress.webp",
-    "/assets/easter-characters/runner-white-shirt.webp",
-    "/assets/easter-characters/runner-coral-wide.webp",
-    "/assets/easter-characters/runner-pony-close.webp",
-    "/assets/easter-characters/runner-sunset-wide.webp",
-  ]);
-  await Promise.all(characterPaths.map((path) => access(new URL(`..${path}`, import.meta.url))));
+  assert.match(taskpaneHtml, /aria-label="开始页脚多人赛跑"/);
+  await Promise.all(runners.map((runner) => access(new URL(`../assets/easter-characters/${runner}`, import.meta.url))));
   assert.match(taskpaneCss, /\.easter-footer\s*\{[\s\S]*flex:\s*0\s+0\s+24px;[\s\S]*height:\s*24px;[\s\S]*min-height:\s*24px;[\s\S]*max-height:\s*24px;/);
   assert.match(taskpaneCss, /\.easter-trigger\s*\{[\s\S]*height:\s*24px;/);
-  assert.match(taskpaneCss, /\.easter-walker\s*\{[\s\S]*animation:\s*easter-walk\s+12s\s+linear\s+infinite;/);
-  assert.match(taskpaneCss, /\.easter-walker\s*\{[\s\S]*width:\s*20px;[\s\S]*height:\s*20px;/);
-  assert.match(taskpaneCss, /\.easter-walker img\s*\{[\s\S]*object-fit:\s*contain;/);
-  assert.match(taskpaneCss, /@media \(prefers-reduced-motion: reduce\)\s*\{[\s\S]*\.easter-walker\s*\{[\s\S]*animation:\s*none\s*!important;/);
+  assert.match(taskpaneCss, /\.easter-walker\s*\{[\s\S]*transform:\s*translate3d\(var\(--runner-translate,\s*-26px\),\s*0,\s*0\);[\s\S]*will-change:\s*transform;/);
+  assert.match(taskpaneCss, /\.easter-footer\.is-playing \.easter-walker img\s*\{[\s\S]*animation:\s*easter-runner-stride/);
+  assert.match(taskpaneCss, /\.easter-count\s*\{[\s\S]*left:\s*50%;/);
+  assert.match(taskpaneJs, /runnerTranslatePixels/);
+  assert.match(taskpaneJs, /easterStage/);
+  assert.match(taskpaneJs, /clientWidth/);
+  assert.match(taskpaneJs, /walker\.offsetWidth/);
+  assert.match(taskpaneJs, /ResizeObserver/);
+  assert.match(taskpaneJs, /reducedMotionQuery\?\.addEventListener\?\.\("change", handleReducedMotionChange\)/);
+  assert.match(taskpaneJs, /reducedMotionQuery\?\.removeEventListener\?\.\("change", handleReducedMotionChange\)/);
+  assert.match(taskpaneJs, /easterWalkers/);
+  assert.match(taskpaneJs, /--runner-translate/);
+  assert.match(taskpaneJs, /REDUCED_MOTION_RUNNER_PROGRESS/);
+  assert.match(taskpaneJs, /footerAnimation\.toggleManual\(\)/);
+  assert.match(taskpaneJs, /footerAnimation\.lockForConversation\(\)/);
+  assert.match(taskpaneJs, /footerAnimation\.unlockConversation\(\)/);
+  assert.match(taskpaneJs, /easterTrigger\.disabled = state\.locked/);
+  assert.doesNotMatch(taskpaneCss, /--runner-reduced-translate/);
+  assert.match(taskpaneCss, /\.easter-walker img\s*\{[\s\S]*animation:\s*none\s*!important;/);
+  assert.doesNotMatch(taskpaneHtml, /duck-/);
+  assert.doesNotMatch(taskpaneCss, /easter-duck/);
+  assert.doesNotMatch(taskpaneJs, /duck-/);
 });
 
 test("底部思考、上下文和审批控件使用可读的状态图标", () => {
@@ -106,8 +140,40 @@ test("模型摘要移除机器人图标并完整显示当前值", () => {
   assert.ok(modelButton, "应能定位模型摘要按钮");
   assert.doesNotMatch(modelButton, /model\.svg/);
   assert.match(taskpaneCss, /\.model-settings-summary\s*\{[\s\S]*font-size:\s*9px;/);
+  assert.match(taskpaneCss, /\.model-settings-anchor\s*\{[\s\S]*flex:\s*1 1 auto;/);
+  assert.match(taskpaneCss, /\.model-button,[\s\S]*?\.effort-button\s*\{[\s\S]*width:\s*100%;/);
+  assert.match(taskpaneCss, /\.model-settings-summary\s*\{[\s\S]*grid-template-columns:\s*minmax\(0,\s*max-content\)\s+3px\s+auto;/);
+  assert.match(taskpaneCss, /\.model-settings-summary\s*\{[\s\S]*justify-content:\s*start;/);
+  assert.doesNotMatch(taskpaneCss, /\.model-settings-summary\s*\{[\s\S]*?padding-right:\s*2em;/);
+  assert.match(taskpaneCss, /\.model-settings-summary #model-label\s*\{[\s\S]*justify-self:\s*start;/);
+  assert.match(taskpaneCss, /\.model-settings-effort-value\s*\{[\s\S]*justify-self:\s*start;/);
+  assert.match(taskpaneCss, /\.model-button > \.chevron\s*\{[\s\S]*visibility:\s*hidden;/);
   assert.match(taskpaneCss, /\.model-settings-summary #model-label\s*\{[\s\S]*overflow:\s*visible;[\s\S]*text-overflow:\s*clip;[\s\S]*white-space:\s*nowrap;/);
   assert.match(taskpaneCss, /\.model-settings-effort-value\s*\{[\s\S]*max-width:\s*none;[\s\S]*overflow:\s*visible;[\s\S]*text-overflow:\s*clip;[\s\S]*white-space:\s*nowrap;/);
+});
+
+test("主界面完整显示工作簿名并展示 ChatExcel 能力欢迎语", () => {
+  const workbookLabelRule = taskpaneCss.match(/\.workbook-label\s*\{[^}]*\}/)?.[0] ?? "";
+  assert.match(taskpaneHtml, /<strong>你好，我是 ChatExcel，当前工作簿旁的 AI Agent<\/strong>/);
+  assert.match(taskpaneHtml, /读取和分析工作簿与选区；写入值和公式/);
+  assert.match(taskpaneHtml, /模型与推理可选；支持粘贴 PNG\/JPEG\/WebP 图片/);
+  assert.doesNotMatch(taskpaneHtml, /准备就绪/);
+  assert.match(taskpaneJs, /heading\.textContent = "你好，我是 ChatExcel，当前工作簿旁的 AI Agent";/);
+  assert.match(taskpaneJs, /读取和分析工作簿与选区；写入值和公式/);
+  assert.match(taskpaneJs, /模型与推理可选；支持粘贴 PNG\/JPEG\/WebP 图片/);
+  assert.doesNotMatch(taskpaneJs, /准备就绪/);
+  assert.match(workbookLabelRule, /overflow-wrap:\s*anywhere;/);
+  assert.match(workbookLabelRule, /white-space:\s*normal;/);
+  assert.doesNotMatch(workbookLabelRule, /text-overflow:\s*ellipsis;/);
+  assert.match(taskpaneCss, /\.empty-state-copy\s*\{[\s\S]*min-width:\s*0;/);
+  assert.match(taskpaneCss, /\.empty-state-copy p\s*\{[\s\S]*overflow-wrap:\s*anywhere;/);
+});
+
+test("审批与发送控件缩小可见图标但保留桌面命中区", () => {
+  assert.match(taskpaneCss, /\.mode-button\s*\{[\s\S]*width:\s*24px;[\s\S]*height:\s*24px;/);
+  assert.match(taskpaneCss, /\.mode-button > img\s*\{[\s\S]*width:\s*12px;[\s\S]*height:\s*12px;/);
+  assert.match(taskpaneCss, /\.send-button\s*\{[\s\S]*width:\s*28px;[\s\S]*height:\s*24px;/);
+  assert.match(taskpaneCss, /\.send-button \.send-icon\s*\{[\s\S]*width:\s*14px;[\s\S]*height:\s*14px;/);
 });
 
 test("协议选择在右侧按模型示例提示", () => {
@@ -134,12 +200,20 @@ test("模型配置按能力目录回填上下文，思考等级保持自动只�
   assert.doesNotMatch(taskpaneJs, /reasoningEffort:\s*elements\.settingsEffort\.value/);
 });
 
+test("任务窗格将官方最大输出与上下文窗口分开呈现", () => {
+  assert.match(taskpaneJs, /selectedModelEntry\.maxOutputLabel/);
+  assert.match(taskpaneJs, /单次最大输出 \$\{maxOutputLabel\.trim\(\)\}/);
+  assert.match(taskpaneJs, /maxOutputSource: config\.maxOutputSource \?\? null/);
+  assert.match(taskpaneJs, /单次最大输出 " \+ entry\.maxOutputLabel\.trim\(\) \+ "（官方模型目录）。/);
+  assert.match(taskpaneJs, /usedTokens\.toLocaleString\(\).*limitTokens\.toLocaleString\(\)/);
+});
+
 test("任务窗格区分已证实能力、兼容档位和自动状态", () => {
   assert.match(taskpaneJs, /compatibleReasoningEfforts/);
   assert.match(taskpaneJs, /reasoningEffortMenuValues\(modelEntry\(selectedModel\)\)/);
   assert.match(taskpaneJs, /description = effort === null[\s\S]*"兼容档位"/);
   assert.match(taskpaneJs, /replaceConversationModels\(result\.models\)/);
-  assert.match(taskpaneJs, /settingsDiscoveredModels = result\.models\.map\(normalizeReasoningModel\)/);
+  assert.match(taskpaneJs, /settingsDiscoveredModels = result\.models\.map\(\(model\) => normalizeReasoningModel\(normalizeModelOutputCapability\(model\)\)\)/);
   assert.match(taskpaneJs, /模型接口未声明思考等级，默认使用提供方自动模式。/);
 });
 
@@ -165,8 +239,8 @@ test("流式重连会撤销当前尝试的文字后缀并显示重连进度", ()
 
 test("窄任务窗格底部控制保持单行且动作按钮紧凑", () => {
   assert.doesNotMatch(taskpaneCss, /\.composer-toolbar\s*\{\s*grid-template-columns:\s*minmax\(0,\s*1fr\);\s*\}/);
-  assert.match(taskpaneCss, /\.mode-button\s*\{\s*width:\s*28px;\s*height:\s*28px;/);
-  assert.match(taskpaneCss, /\.send-button\s*\{\s*width:\s*34px;\s*height:\s*28px;/);
+  assert.match(taskpaneCss, /\.mode-button\s*\{\s*width:\s*24px;\s*height:\s*24px;/);
+  assert.match(taskpaneCss, /\.send-button\s*\{\s*width:\s*28px;\s*height:\s*24px;/);
   assert.match(taskpaneCss, /@media \(max-width: 439px\)[\s\S]*?\.action-controls\s*\{[\s\S]*?gap:\s*3px;[\s\S]*?justify-content:\s*flex-end;/);
   assert.doesNotMatch(manifest, /RequestedWidth|<Width>/);
 });
@@ -232,6 +306,45 @@ test("任务窗格启动时探测提供方连通性，并同步模型和设置�
   assert.match(taskpaneCss, /#model-button\[data-provider-connectivity="error"\],[\s\S]*?#settings-button\[data-provider-connectivity="error"\]/);
   assert.match(taskpaneCss, /#model-button\[data-provider-connectivity="ready"\] > img,[\s\S]*?#settings-button\[data-provider-connectivity="ready"\] > img\s*\{[\s\S]*?filter:/);
   assert.match(taskpaneCss, /#model-button\[data-provider-connectivity="error"\] > img,[\s\S]*?#settings-button\[data-provider-connectivity="error"\] > img\s*\{[\s\S]*?filter:/);
+});
+
+test("配置读取失败时红色设置入口仍可打开并提供修复表单", () => {
+  const openSettingsSource = taskpaneJs.match(
+    /function openSettings\(\) \{[\s\S]*?\n\}/,
+  )?.[0] ?? "";
+  const populateSettingsSource = taskpaneJs.match(
+    /function populateSettings\(\) \{[\s\S]*?\n\}/,
+  )?.[0] ?? "";
+
+  assert.match(openSettingsSource, /if \(runner\.running\) return;/);
+  assert.doesNotMatch(openSettingsSource, /!configState/);
+  assert.match(openSettingsSource, /populateSettings\(\);[\s\S]*?settingsView\.hidden = false;/);
+  assert.match(
+    populateSettingsSource,
+    /if \(!configState\) \{[\s\S]*?renderSettingsProtocols\(\);[\s\S]*?renderSettingsModels\(\);[\s\S]*?toggleCustomSettings\(\);[\s\S]*?setSettingsMessage\([^;]+, "error"\);[\s\S]*?return;/,
+  );
+  assert.match(populateSettingsSource, /if \(!configState\) \{[\s\S]*?useSystemConfig\.checked = false;[\s\S]*?toggleCustomSettings\(\);/);
+  assert.match(taskpaneJs, /const protocols = configState\?\.protocols\?\.length[\s\S]*?SUPPORTED_PROTOCOLS;/);
+  assert.match(taskpaneJs, /renderSettingsModels\(configState\?\.settings\?\.model \?\? null\);/);
+  assert.match(taskpaneJs, /elements\.settingsButton\.disabled = busy;/);
+});
+
+test("设置页提供 Codex 与 Claude CLI 来源选择", () => {
+  assert.match(taskpaneHtml, /使用系统 CLI 配置/);
+  assert.match(taskpaneHtml, /Codex 或 Claude CLI 配置/);
+  assert.match(taskpaneHtml, /id="system-config-source"/);
+  assert.match(taskpaneJs, /id: "auto", label: "自动（优先 Codex CLI）"/);
+  assert.match(taskpaneJs, /id: "codex", label: "Codex CLI"/);
+  assert.match(taskpaneJs, /id: "claude", label: "Claude CLI"/);
+  assert.match(taskpaneJs, /systemSource: elements\.systemConfigSource\.value/);
+});
+
+test("系统配置摘要和 CLI 来源在窄窗格中保持清晰布局", () => {
+  assert.match(taskpaneHtml, /class="system-source-field"/);
+  assert.match(taskpaneCss, /\.system-summary\s*\{[\s\S]*?gap:\s*8px;/);
+  assert.match(taskpaneCss, /\.system-summary strong,\s*\.system-summary span\s*\{[\s\S]*?overflow:\s*hidden;[\s\S]*?text-overflow:\s*ellipsis;[\s\S]*?white-space:\s*nowrap;/);
+  assert.match(taskpaneCss, /\.system-source-field\s*\{[\s\S]*?display:\s*grid;[\s\S]*?gap:\s*5px;/);
+  assert.match(taskpaneCss, /#system-config-source\s*\{[\s\S]*?width:\s*100%;/);
 });
 
 test("对话按角色使用三分之二宽气泡，并把连续动作收束为带箭头的居中流程", () => {

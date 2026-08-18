@@ -194,6 +194,7 @@ internal sealed class LegacyWorkbookHost : Form
             var controllerOptions = environment.CreateCoreWebView2ControllerOptions();
             controllerOptions.IsInPrivateModeEnabled = true;
             await webView.EnsureCoreWebView2Async(environment, controllerOptions);
+            webView.AllowExternalDrop = true;
             webView.CoreWebView2.Settings.AreDevToolsEnabled = false;
             webView.CoreWebView2.Settings.AreDefaultContextMenusEnabled = false;
             webView.CoreWebView2.Settings.IsStatusBarEnabled = false;

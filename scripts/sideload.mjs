@@ -11,6 +11,7 @@ import { OfficeAddinManifest, OfficeApp } from "office-addin-manifest";
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(scriptDirectory, "..");
 const manifestPath = path.join(projectRoot, "manifest.xml");
+const startScriptPath = path.join(scriptDirectory, "start.ps1");
 
 export function parseRegistryExcelPath(output) {
   const match = String(output).match(/^\s*\(Default\)\s+REG_SZ\s+(.+?)\s*$/im);
@@ -65,12 +66,30 @@ function findExcelExecutable() {
   return excelPath;
 }
 
+function ensureLocalService() {
+  try {
+    execFileSync("powershell.exe", [
+      "-NoProfile",
+      "-ExecutionPolicy", "Bypass",
+      "-File", startScriptPath,
+    ], {
+      cwd: projectRoot,
+      stdio: "inherit",
+      windowsHide: true,
+    });
+  } catch (error) {
+    const status = Number.isInteger(error?.status) ? `（退出码 ${error.status}）` : "";
+    throw new Error(`ChatExcel 本地服务未就绪${status}。请先运行 npm run certs:install，并检查 .runtime 日志后重试。`);
+  }
+}
+
 async function main() {
   if (process.platform !== "win32") {
     throw new Error("当前侧载脚本只支持 Windows Microsoft Excel。");
   }
 
   const { workbookPath } = parseSideloadArguments(process.argv.slice(2));
+  ensureLocalService();
   await registerAddIn(manifestPath);
   let targetFile = workbookPath;
   if (!targetFile) {

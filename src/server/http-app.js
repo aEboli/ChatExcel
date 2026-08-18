@@ -2,7 +2,8 @@ import express from "express";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
-import { loadCodexConfig, toPublicConfig } from "./config.js";
+import { toPublicConfig } from "./config.js";
+import { loadSystemConfig } from "./system-config.js";
 import { APP_NAME, APP_VERSION, SERVICE_ORIGIN, SERVICE_PORT } from "../shared/app-info.js";
 import { createLegacyWorkbookBridge } from "./legacy-workbook-bridge.js";
 
@@ -193,7 +194,7 @@ function requireRuntimeConfigStore(runtimeConfigStore) {
 }
 
 export function createApp({
-  configLoader = loadCodexConfig,
+  configLoader = loadSystemConfig,
   runtimeConfigStore,
   sessionManager,
   legacyWorkbookBridge = createLegacyWorkbookBridge(),

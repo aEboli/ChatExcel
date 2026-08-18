@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { parseRegistryExcelPath, parseSideloadArguments } from "../scripts/sideload.mjs";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -37,4 +37,14 @@ test("Office 侧载路径拒绝旧版 xls", () => {
   writeFileSync(workbook, "fixture");
 
   assert.throws(() => parseSideloadArguments(["--workbook", workbook]), /只支持/);
+});
+
+test("侧载前先确保本地服务健康", () => {
+  const source = readFileSync(new URL("../scripts/sideload.mjs", import.meta.url), "utf8");
+  const serviceStart = source.indexOf("ensureLocalService();");
+  const manifestRegistration = source.indexOf("await registerAddIn(manifestPath);");
+
+  assert.match(source, /const startScriptPath = path\.join\(scriptDirectory, "start\.ps1"\)/);
+  assert.match(source, /execFileSync\("powershell\.exe"/);
+  assert.ok(serviceStart >= 0 && serviceStart < manifestRegistration);
 });

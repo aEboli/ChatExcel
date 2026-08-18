@@ -82,6 +82,8 @@ const OFFICIAL_CAPABILITIES = Object.freeze([
     protocols: Object.freeze(["openai-responses", "openai-chat-completions"]),
     matches: exactModelIds(["deepseek-v4-flash"]),
     contextWindow: 1_000_000,
+    maxOutputLabel: "384K",
+    maxOutputSource: "official",
     reasoningMode: "levels",
     reasoningEfforts: DEEPSEEK_V4_FLASH_EFFORTS,
     defaultReasoningEffort: "high",
@@ -97,6 +99,8 @@ const OFFICIAL_CAPABILITIES = Object.freeze([
     protocols: Object.freeze(["openai-responses", "openai-chat-completions"]),
     matches: exactModelIds(["deepseek-v4-pro"]),
     contextWindow: 1_000_000,
+    maxOutputLabel: "384K",
+    maxOutputSource: "official",
     reasoningMode: "levels",
     reasoningEfforts: DEEPSEEK_V4_PRO_EFFORTS,
     defaultReasoningEffort: "high",
@@ -180,6 +184,10 @@ export function resolveOfficialModelCapabilities(protocol, modelId) {
   if (!entry) return null;
   return {
     contextWindow: entry.contextWindow,
+    ...(entry.maxOutputLabel ? {
+      maxOutputLabel: entry.maxOutputLabel,
+      maxOutputSource: entry.maxOutputSource,
+    } : {}),
     reasoningMode: entry.reasoningMode,
     reasoningEfforts: [...entry.reasoningEfforts],
     defaultReasoningEffort: entry.defaultReasoningEffort,

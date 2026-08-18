@@ -267,6 +267,19 @@ export function clipboardImageFiles(clipboardData) {
 
 export const getClipboardImageFiles = clipboardImageFiles;
 
+export function transferHasFiles(transferData) {
+  if (Number(transferData?.files?.length) > 0) return true;
+  const types = transferData?.types;
+  if (!types) return false;
+  if (typeof types.contains === "function" && types.contains("Files")) return true;
+  const length = Number(types.length);
+  if (!Number.isSafeInteger(length) || length <= 0) return false;
+  for (let index = 0; index < length; index += 1) {
+    if (String(types[index] ?? "").toLowerCase() === "files") return true;
+  }
+  return false;
+}
+
 export function formatAttachmentSize(byteLength) {
   if (!Number.isFinite(byteLength) || byteLength <= 0) return "0 KB";
   return `${Math.max(1, Math.round(byteLength / 1024))} KB`;

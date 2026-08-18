@@ -1,6 +1,7 @@
 import { AgentRunner } from "./agent-runner.js";
 import { summarizeToolOutput } from "./activity-summary.js";
 import { executeExcelTool, toToolErrorResult } from "./excel-executor.js";
+import { FooterAnimationController, runnerTranslatePixels } from "./footer-animation.js";
 import {
   captureOfficeHistoryPreview,
   historyPreviewFallback,
@@ -20,6 +21,7 @@ import {
   formatAttachmentSize,
   MAX_ATTACHMENTS,
   prepareImageFile,
+  transferHasFiles,
 } from "./image-attachments.js";
 
 const pageParameters = new URLSearchParams(globalThis.location.search);
@@ -36,8 +38,21 @@ const PROTOCOL_MODEL_EXAMPLES = Object.freeze({
   "anthropic-messages": ["Claude Opus", "Claude Sonnet", "Claude Haiku"],
   "google-gemini": ["Gemini 2.5 Pro", "Gemini 2.5 Flash", "Gemini Flash-Lite"],
 });
+const SUPPORTED_PROTOCOLS = Object.freeze([
+  { id: "openai-responses", label: "OpenAI Responses" },
+  { id: "openai-chat-completions", label: "OpenAI Chat Completions" },
+  { id: "anthropic-messages", label: "Anthropic Messages" },
+  { id: "google-gemini", label: "Google Gemini generateContent" },
+]);
+const SYSTEM_CONFIG_SOURCES = Object.freeze([
+  { id: "auto", label: "自动（优先 Codex CLI）" },
+  { id: "codex", label: "Codex CLI" },
+  { id: "claude", label: "Claude CLI" },
+]);
 
 const elements = {
+  appShell: document.querySelector("#app-shell"),
+  appVersion: document.querySelector("#app-version"),
   statusDot: document.querySelector("#status-dot"),
   workbookStatus: document.querySelector("#workbook-status"),
   workbookLabel: document.querySelector("#workbook-label"),
@@ -65,6 +80,8 @@ const elements = {
   denyButton: document.querySelector("#deny-button"),
   attachmentError: document.querySelector("#attachment-error"),
   attachmentList: document.querySelector("#attachment-list"),
+  imageDropHint: document.querySelector("#image-drop-hint"),
+  composer: document.querySelector("#composer"),
   promptInput: document.querySelector("#prompt-input"),
   modelButton: document.querySelector("#model-button"),
   modelLabel: document.querySelector("#model-label"),
@@ -86,6 +103,10 @@ const elements = {
   contextLabel: document.querySelector("#context-label"),
   easterFooter: document.querySelector("#easter-footer"),
   easterTrigger: document.querySelector("#easter-trigger"),
+  easterStage: document.querySelector("#easter-stage"),
+  easterWalkers: [...document.querySelectorAll(".easter-walker")],
+  easterCount: document.querySelector("#easter-count"),
+  easterStatus: document.querySelector("#easter-status"),
   modeButton: document.querySelector("#mode-button"),
   modeIcon: document.querySelector("#mode-icon"),
   modeLabel: document.querySelector("#mode-label"),
@@ -96,6 +117,7 @@ const elements = {
   settingsBackButton: document.querySelector("#settings-back-button"),
   settingsForm: document.querySelector("#settings-form"),
   useSystemConfig: document.querySelector("#use-system-config"),
+  systemConfigSource: document.querySelector("#system-config-source"),
   systemProvider: document.querySelector("#system-provider"),
   systemEndpoint: document.querySelector("#system-endpoint"),
   fetchSystemModelsButton: document.querySelector("#fetch-system-models-button"),
@@ -130,6 +152,7 @@ const registeredWorksheetIds = new Set();
 const settingsBackground = [...document.querySelectorAll(".app-shell > :not(#settings-view):not(#confirm-modal)")];
 let attachments = [];
 let imagePreviewTrigger = null;
+let imageDropDepth = 0;
 let approvalMode = "required";
 let approvalModeSaving = false;
 let providerConnectivityState = "checking";
@@ -163,6 +186,67 @@ let suppressNextStoppedNotice = false;
 let recoveryUnavailable = false;
 let recoveryDisabledForBinding = false;
 let selectedHistoryActivityIndex = null;
+const reducedMotionQuery = globalThis.matchMedia?.("(prefers-reduced-motion: reduce)") ?? null;
+const REDUCED_MOTION_RUNNER_PROGRESS = Object.freeze([0.12, 0.27, 0.42, 0.57, 0.72, 0.87]);
+let latestFooterAnimationState = null;
+
+function footerStatusText({ started, playing, locked, phase, completedCount }) {
+  if (locked) return "对话进行中，页脚多人赛跑正在运行，不能暂停。";
+  if (!started) return "页脚多人赛跑尚未开始。";
+  const countText = completedCount > 0 ? `已完成 ${completedCount} 次。` : "";
+  if (phase === "catch-up") return `首位已到达，其他人物正在快速冲刺。${countText}`;
+  if (phase === "finished") return `本轮多人赛跑完成。${countText}`;
+  return playing
+    ? `页脚多人赛跑正在运行。${countText}`
+    : `页脚多人赛跑已暂停。${countText}`;
+}
+
+function renderFooterRunnerPositions(state) {
+  const stageWidth = elements.easterStage?.clientWidth ?? 0;
+  for (const runner of state.runners) {
+    const walker = elements.easterWalkers[runner.id];
+    if (!walker) continue;
+    const logicalProgress = reducedMotionQuery?.matches
+      ? REDUCED_MOTION_RUNNER_PROGRESS[runner.id]
+      : runner.progress;
+    const translatePx = runnerTranslatePixels(logicalProgress, runner.id, stageWidth, walker.offsetWidth);
+    walker.style.setProperty("--runner-translate", `${translatePx.toFixed(3)}px`);
+    walker.dataset.racePhase = state.phase;
+  }
+}
+
+function renderFooterAnimation(state) {
+  latestFooterAnimationState = state;
+  renderFooterRunnerPositions(state);
+  elements.easterFooter.classList.toggle("is-active", state.started);
+  elements.easterFooter.classList.toggle("is-playing", state.playing);
+  elements.easterFooter.classList.toggle("is-conversation-locked", state.locked);
+  elements.easterFooter.dataset.animationState = state.locked
+    ? "conversation"
+    : state.playing ? "playing" : state.started ? "paused" : "idle";
+  elements.easterTrigger.setAttribute("aria-pressed", String(state.playing));
+  elements.easterTrigger.setAttribute("aria-disabled", String(state.locked));
+  elements.easterTrigger.disabled = state.locked;
+  elements.easterTrigger.title = state.locked
+    ? "对话进行中，页脚多人赛跑不能暂停"
+    : state.playing ? "暂停页脚多人赛跑" : state.started ? "继续页脚多人赛跑" : "开始页脚多人赛跑";
+  elements.easterTrigger.setAttribute("aria-label", elements.easterTrigger.title);
+  elements.easterCount.textContent = state.flashText;
+  elements.easterStatus.textContent = footerStatusText(state);
+}
+
+const footerAnimation = new FooterAnimationController({ onChange: renderFooterAnimation });
+const refreshFooterRunnerPositions = () => {
+  if (latestFooterAnimationState) renderFooterRunnerPositions(latestFooterAnimationState);
+};
+const footerStageResizeObserver = elements.easterStage && globalThis.ResizeObserver
+  ? new globalThis.ResizeObserver(refreshFooterRunnerPositions)
+  : null;
+const handleReducedMotionChange = () => refreshFooterRunnerPositions();
+
+footerStageResizeObserver?.observe(elements.easterStage);
+globalThis.addEventListener?.("resize", refreshFooterRunnerPositions);
+reducedMotionQuery?.addEventListener?.("change", handleReducedMotionChange);
 
 class ApiError extends Error {
   constructor(code, message, status, { recoverableSession = false } = {}) {
@@ -198,6 +282,24 @@ async function requestJson(path, { method = "GET", body, signal } = {}) {
     );
   }
   return payload;
+}
+
+function setAppVersion(version) {
+  const normalizedVersion = typeof version === "string" ? version.trim() : "";
+  const available = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(normalizedVersion);
+  elements.appVersion.textContent = available ? `v${normalizedVersion}` : "v--";
+  elements.appVersion.dataset.versionState = available ? "available" : "unavailable";
+  elements.appVersion.title = available ? `ChatExcel 版本 ${normalizedVersion}` : "ChatExcel 版本暂不可用";
+  elements.appVersion.setAttribute("aria-label", elements.appVersion.title);
+}
+
+async function loadAppVersion() {
+  try {
+    const health = await requestJson("/api/health");
+    setAppVersion(health?.version);
+  } catch {
+    setAppVersion(null);
+  }
 }
 
 async function requestStream(path, { method = "POST", body, signal, onEvent } = {}) {
@@ -663,6 +765,7 @@ function finishAssistantMessage(text) {
 
 function openImagePreview(attachment, trigger) {
   if (typeof attachment?.dataUrl !== "string" || attachment.dataUrl === "") return;
+  clearImageDropTarget();
   closeMenus();
   imagePreviewTrigger = trigger ?? document.activeElement;
   elements.imagePreviewImage.src = attachment.dataUrl;
@@ -738,9 +841,20 @@ function renderConversation() {
     const empty = document.createElement("div");
     empty.className = "empty-state";
     empty.append(createIcon("/assets/fluent/model.svg"));
-    const label = document.createElement("strong");
-    label.textContent = "准备就绪";
-    empty.append(label);
+    const copy = document.createElement("div");
+    copy.className = "empty-state-copy";
+    const heading = document.createElement("strong");
+    heading.textContent = "你好，我是 ChatExcel，当前工作簿旁的 AI Agent";
+    copy.append(heading);
+    const capabilities = document.createElement("p");
+    capabilities.textContent =
+      "读取和分析工作簿与选区；写入值和公式，设置格式和数字格式，自动调整、清除、管理工作表，创建表格和图表并排序。";
+    copy.append(capabilities);
+    const workflow = document.createElement("p");
+    workflow.textContent =
+      "模型与推理可选；支持粘贴 PNG/JPEG/WebP 图片；流式反馈、修改审批、操作只读预览和文本会话短暂恢复。";
+    copy.append(workflow);
+    empty.append(copy);
     fragment.append(empty);
   } else {
     for (let index = 0; index < visibleMessages.length; index += 1) {
@@ -1014,6 +1128,7 @@ function goToLatestHistory() {
 
 function showConfirmation({ title, message, confirmText = "确认", cancelText = "取消" }) {
   if (pendingConfirmation) return Promise.resolve(false);
+  clearImageDropTarget();
   elements.confirmTitle.textContent = title;
   elements.confirmMessage.textContent = message;
   elements.confirmAcceptButton.textContent = confirmText;
@@ -1310,17 +1425,24 @@ function compactTokenCount(value) {
 
 function updateContextControl() {
   const limitTokens = Number(currentContext?.limitTokens ?? configState?.config?.contextWindow ?? configState?.settings?.contextWindow);
+  const selectedModelEntry = modelEntry(selectedModel);
+  const maxOutputLabel = selectedModelEntry
+    ? selectedModelEntry.maxOutputLabel ?? null
+    : configState?.config?.maxOutputLabel ?? null;
   const compactLimit = compactTokenCount(limitTokens);
   const hasUsage = currentContext?.status === "available" && Number.isFinite(Number(currentContext.percent));
   const percent = hasUsage ? Math.max(0, Math.min(100, Number(currentContext.percent))) : 0;
   const usedTokens = Number(currentContext?.usedTokens);
   const displayedLimit = compactLimit === "--" ? "上下文长度尚未读取" : `上下文长度 ${compactLimit}`;
+  const outputLimit = typeof maxOutputLabel === "string" && maxOutputLabel.trim() !== ""
+    ? ` · 单次最大输出 ${maxOutputLabel.trim()}`
+    : "";
   elements.contextLabel.textContent = compactLimit;
   elements.contextButton.dataset.contextState = hasUsage ? "available" : "unavailable";
   elements.contextButton.style.setProperty("--context-progress", `${percent * 3.6}deg`);
   elements.contextButton.title = hasUsage && Number.isFinite(usedTokens) && Number.isFinite(limitTokens)
-    ? `${displayedLimit} · 已使用 ${usedTokens.toLocaleString()} / ${limitTokens.toLocaleString()} tokens（${Math.round(percent)}%）`
-    : `${displayedLimit} · 提供方尚未返回上下文用量`;
+    ? `${displayedLimit}${outputLimit} · 已使用 ${usedTokens.toLocaleString()} / ${limitTokens.toLocaleString()} tokens（${Math.round(percent)}%）`
+    : `${displayedLimit}${outputLimit} · 提供方尚未返回上下文用量`;
   elements.contextButton.setAttribute("aria-label", elements.contextButton.title);
 }
 
@@ -1402,12 +1524,26 @@ function modelFromPublicConfig(config = {}) {
     defaultReasoningEffort: config.defaultReasoningEffort ?? null,
     contextWindow: config.contextWindow,
     contextSource: config.contextSource ?? null,
+    maxOutputLabel: config.maxOutputLabel ?? null,
+    maxOutputSource: config.maxOutputSource ?? null,
   });
+}
+
+function normalizeModelOutputCapability(model) {
+  if (!model || typeof model !== "object") return model;
+  const label = typeof model.maxOutputLabel === "string" ? model.maxOutputLabel.trim() : "";
+  if (label === "") {
+    const { maxOutputLabel: _label, maxOutputSource: _source, ...withoutOutput } = model;
+    return withoutOutput;
+  }
+  return { ...model, maxOutputLabel: label, maxOutputSource: model.maxOutputSource ?? null };
 }
 
 function normalizeConfigState(payload) {
   const config = payload.config ?? {};
-  const models = Array.isArray(payload.models) ? payload.models.map(normalizeReasoningModel) : [];
+  const models = Array.isArray(payload.models)
+    ? payload.models.map((model) => normalizeReasoningModel(normalizeModelOutputCapability(model)))
+    : [];
   if (config.model && !models.some((model) => model.id === config.model)) {
     models.unshift(modelFromPublicConfig(config));
   }
@@ -1426,7 +1562,9 @@ function normalizeConfigState(payload) {
     protocols: Array.isArray(payload.protocols) ? payload.protocols.map((protocol) => ({ ...protocol })) : [],
     settings: {
       ...settings,
-      models: Array.isArray(settings.models) ? settings.models.map(normalizeReasoningModel) : [],
+      models: Array.isArray(settings.models)
+        ? settings.models.map((model) => normalizeReasoningModel(normalizeModelOutputCapability(model)))
+        : [],
     },
   };
 }
@@ -1434,7 +1572,9 @@ function normalizeConfigState(payload) {
 function replaceConversationModels(models) {
   const previousModel = selectedModel;
   const previousEffort = selectedReasoningEffort;
-  configState.models = Array.isArray(models) ? models.map(normalizeReasoningModel) : [];
+  configState.models = Array.isArray(models)
+    ? models.map((model) => normalizeReasoningModel(normalizeModelOutputCapability(model)))
+    : [];
   if (configState.config.model && !configState.models.some((model) => model.id === configState.config.model)) {
     configState.models.unshift(modelFromPublicConfig(configState.config));
   }
@@ -1572,10 +1712,10 @@ function renderAttachments() {
   elements.attachmentList.inert = uiBusy;
 }
 
-async function addSelectedImages(fileList) {
+async function addSelectedImages(fileList, { warningMessage = "" } = {}) {
   const files = Array.from(fileList ?? []);
   if (files.length === 0) return;
-  showAttachmentError("");
+  showAttachmentError(warningMessage);
   if (attachments.length + files.length > MAX_ATTACHMENTS) {
     showAttachmentError(`每条消息最多添加 ${MAX_ATTACHMENTS} 张图片。`);
     return;
@@ -1596,12 +1736,79 @@ async function addSelectedImages(fileList) {
   }
 }
 
-function clipboardContainsUnsupportedImage(clipboardData) {
+function transferContainsUnsupportedImage(transferData) {
   const itemTypes = [
-    ...Array.from(clipboardData?.files ?? []).map((file) => file?.type),
-    ...Array.from(clipboardData?.items ?? []).map((item) => item?.type),
+    ...Array.from(transferData?.files ?? []).map((file) => file?.type),
+    ...Array.from(transferData?.items ?? []).map((item) => item?.type),
   ];
   return itemTypes.some((type) => /^image\//i.test(String(type ?? "")) && !/^image\/(?:png|jpeg|webp)$/i.test(String(type)));
+}
+
+function imageDropAvailable() {
+  return !uiBusy
+    && elements.settingsView.hidden
+    && elements.confirmModal.hidden
+    && elements.imagePreviewModal.hidden;
+}
+
+function clearImageDropTarget() {
+  imageDropDepth = 0;
+  elements.composer.classList.remove("is-image-drop-target");
+  elements.imageDropHint.hidden = true;
+}
+
+function setImageDropTarget() {
+  elements.composer.classList.add("is-image-drop-target");
+  elements.imageDropHint.hidden = false;
+}
+
+function handleImageDragEnter(event) {
+  if (!transferHasFiles(event.dataTransfer)) return;
+  event.preventDefault();
+  if (!imageDropAvailable()) {
+    clearImageDropTarget();
+    return;
+  }
+  imageDropDepth += 1;
+  setImageDropTarget();
+}
+
+function handleImageDragOver(event) {
+  if (!transferHasFiles(event.dataTransfer)) return;
+  event.preventDefault();
+  if (!imageDropAvailable()) {
+    clearImageDropTarget();
+    return;
+  }
+  if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+  setImageDropTarget();
+}
+
+function handleImageDragLeave(event) {
+  if (!transferHasFiles(event.dataTransfer)) return;
+  imageDropDepth = Math.max(0, imageDropDepth - 1);
+  if (imageDropDepth === 0) clearImageDropTarget();
+}
+
+function handleImageDrop(event) {
+  const transferData = event.dataTransfer;
+  if (!transferHasFiles(transferData) && Number(transferData?.files?.length) === 0) return;
+  event.preventDefault();
+  const available = imageDropAvailable();
+  clearImageDropTarget();
+  if (!available) return;
+
+  const files = clipboardImageFiles(transferData);
+  const hasUnsupportedImage = transferContainsUnsupportedImage(transferData);
+  if (files.length === 0) {
+    if (hasUnsupportedImage) showAttachmentError("只支持 PNG、JPEG 或 WebP 图片。");
+    return;
+  }
+  void addSelectedImages(files, {
+    warningMessage: hasUnsupportedImage
+      ? "部分图片格式不受支持，仅保留 PNG、JPEG 或 WebP 图片。"
+      : "",
+  });
 }
 
 function insertClipboardText(text) {
@@ -1638,6 +1845,7 @@ function resizePromptInput() {
 
 function setBusy(busy) {
   uiBusy = busy;
+  clearImageDropTarget();
   if (busy) closeMenus();
   elements.promptInput.disabled = busy;
   elements.modelButton.disabled = busy || !configState;
@@ -1740,6 +1948,7 @@ function requestLegacy(body) {
 function handleRunnerEvent(event) {
   switch (event.type) {
     case "run_started":
+      footerAnimation.lockForConversation();
       currentOperationId = history.startOperation({ label: event.message || "分析图片" }).id;
       currentRunOutcome = "success";
       streamingAssistantId = null;
@@ -1815,6 +2024,7 @@ function handleRunnerEvent(event) {
       finishAssistantMessage(event.message);
       break;
     case "run_error":
+      footerAnimation.unlockConversation();
       currentRunOutcome = "error";
       streamingAssistantId = null;
       streamingAssistantStepTextLength = 0;
@@ -1836,6 +2046,7 @@ function handleRunnerEvent(event) {
       appendMessage("error", event.error instanceof Error ? event.error.message : "任务失败。" );
       break;
     case "run_stopped":
+      footerAnimation.unlockConversation();
       currentRunOutcome = "stopped";
       streamingAssistantId = null;
       streamingAssistantStepTextLength = 0;
@@ -1851,6 +2062,7 @@ function handleRunnerEvent(event) {
       }
       break;
     case "run_finished":
+      footerAnimation.unlockConversation();
       history.finishOperation(currentRunOutcome);
       currentOperationId = null;
       renderHistoricalState();
@@ -1971,7 +2183,9 @@ function setSettingsMessage(message, kind = "") {
 }
 
 function renderSettingsProtocols(preferredProtocol = "openai-responses") {
-  const protocols = configState?.protocols ?? [];
+  const protocols = configState?.protocols?.length
+    ? configState.protocols
+    : SUPPORTED_PROTOCOLS;
   elements.apiProtocol.replaceChildren();
   for (const protocol of protocols) {
     const option = document.createElement("option");
@@ -2036,6 +2250,11 @@ function renderSettingsEfforts() {
       ? "上下文长度来自官方模型目录。"
       : "上下文长度来自提供方模型元数据。"
     : "";
+  const maxOutputNote = typeof entry.maxOutputLabel === "string" && entry.maxOutputLabel.trim() !== ""
+    ? entry.maxOutputSource === "official"
+      ? "单次最大输出 " + entry.maxOutputLabel.trim() + "（官方模型目录）。"
+      : "单次最大输出 " + entry.maxOutputLabel.trim() + "。"
+    : "";
   const reasoningNote = entry.reasoningSource === "compatibility"
     ? "模型接口未声明思考等级，默认使用提供方自动模式。"
     : entry.reasoningMode === "thinking-toggle"
@@ -2047,7 +2266,7 @@ function renderSettingsEfforts() {
           : entry.reasoningSource === "provider"
             ? "思考等级来自提供方模型元数据，不能手动修改。"
             : "当前按模型 ID 保守映射，不能手动修改。";
-  elements.mappingNote.textContent = [contextNote, reasoningNote].filter(Boolean).join(" ");
+  elements.mappingNote.textContent = [contextNote, maxOutputNote, reasoningNote].filter(Boolean).join(" ");
 }
 
 function renderSettingsModels(preferredModel = null) {
@@ -2085,11 +2304,48 @@ function toggleCustomSettings() {
   const useSystemConfig = elements.useSystemConfig.checked;
   elements.customSettings.hidden = useSystemConfig;
   elements.fetchSystemModelsButton.hidden = !useSystemConfig;
+  elements.systemConfigSource.disabled = !useSystemConfig;
+}
+
+function renderSystemConfigSources(sources = SYSTEM_CONFIG_SOURCES, preferredSource = "auto") {
+  const options = Array.isArray(sources) && sources.length > 0 ? sources : SYSTEM_CONFIG_SOURCES;
+  elements.systemConfigSource.replaceChildren();
+  for (const source of options) {
+    if (!source || typeof source.id !== "string" || typeof source.label !== "string") continue;
+    const option = document.createElement("option");
+    option.value = source.id;
+    option.textContent = source.label;
+    elements.systemConfigSource.append(option);
+  }
+  elements.systemConfigSource.value = options.some((source) => source?.id === preferredSource)
+    ? preferredSource
+    : "auto";
 }
 
 function populateSettings() {
-  if (!configState) return;
+  if (!configState) {
+    // 系统配置不可用时仍允许用户直接修复或改用自定义 API。
+    elements.useSystemConfig.checked = false;
+    renderSystemConfigSources();
+    elements.systemProvider.textContent = "系统配置不可用";
+    elements.systemEndpoint.textContent = "";
+    renderSettingsProtocols();
+    elements.apiUrl.value = "";
+    elements.apiKey.value = "";
+    elements.apiKey.placeholder = "保存到当前 Windows 用户的加密配置";
+    elements.contextWindow.value = "200000";
+    elements.maxSteps.value = "100";
+    settingsDiscoveredModels = [];
+    renderSettingsModels();
+    toggleCustomSettings();
+    setSettingsMessage("系统配置不可用，已打开自定义 API 配置；也可以修复 Codex 配置后重新加载。", "error");
+    return;
+  }
   elements.useSystemConfig.checked = configState.settings.useSystemConfig;
+  renderSystemConfigSources(
+    configState.settings.systemSources ?? configState.systemSources,
+    configState.settings.systemSource ?? configState.systemSource ?? "auto",
+  );
   elements.systemProvider.textContent = `${configState.config.providerName} · ${configState.config.model}`;
   elements.systemEndpoint.textContent = configState.config.endpoint;
   renderSettingsProtocols(configState.settings.protocol ?? "openai-responses");
@@ -2101,7 +2357,7 @@ function populateSettings() {
   elements.contextWindow.value = String(configState.settings.contextWindow ?? 200000);
   elements.maxSteps.value = String(configState.settings.maxSteps ?? 100);
   settingsDiscoveredModels = Array.isArray(configState.settings.models)
-    ? configState.settings.models.map(normalizeReasoningModel)
+    ? configState.settings.models.map((model) => normalizeReasoningModel(normalizeModelOutputCapability(model)))
     : [];
   renderSettingsModels(configState.settings.model);
   toggleCustomSettings();
@@ -2109,7 +2365,8 @@ function populateSettings() {
 }
 
 function openSettings() {
-  if (runner.running || !configState) return;
+  if (runner.running) return;
+  clearImageDropTarget();
   closeMenus();
   populateSettings();
   for (const section of settingsBackground) {
@@ -2139,7 +2396,7 @@ async function discoverModels(useSystemConfig) {
     const result = await api.discoverModels({
       useSystemConfig,
       ...(useSystemConfig
-        ? {}
+        ? { systemSource: elements.systemConfigSource.value }
         : {
             protocol: elements.apiProtocol.value,
             apiUrl: elements.apiUrl.value.trim(),
@@ -2151,8 +2408,8 @@ async function discoverModels(useSystemConfig) {
       updateComposerControls();
       setSettingsMessage(`已获取 ${result.models.length} 个模型，可在对话框底部切换。`, "success");
     } else {
-      settingsDiscoveredModels = result.models.map(normalizeReasoningModel);
-      renderSettingsModels(configState.settings.model);
+      settingsDiscoveredModels = result.models.map((model) => normalizeReasoningModel(normalizeModelOutputCapability(model)));
+      renderSettingsModels(configState?.settings?.model ?? null);
       applySettingsModelContextWindow();
       setSettingsMessage(`已获取 ${result.models.length} 个模型。`, "success");
     }
@@ -2172,7 +2429,11 @@ async function saveSettings(event) {
     const useSystemConfig = elements.useSystemConfig.checked;
     const payload = await api.saveSettings(
       useSystemConfig
-        ? { useSystemConfig: true, maxSteps: Number(elements.maxSteps.value) }
+        ? {
+            useSystemConfig: true,
+            systemSource: elements.systemConfigSource.value,
+            maxSteps: Number(elements.maxSteps.value),
+          }
         : {
             useSystemConfig: false,
             protocol: elements.apiProtocol.value,
@@ -2361,7 +2622,7 @@ elements.promptInput.addEventListener("input", () => {
 elements.promptInput.addEventListener("paste", (event) => {
   const clipboardData = event.clipboardData;
   const files = clipboardImageFiles(clipboardData);
-  const hasUnsupportedImage = clipboardContainsUnsupportedImage(clipboardData);
+  const hasUnsupportedImage = transferContainsUnsupportedImage(clipboardData);
   if (files.length === 0) {
     if (hasUnsupportedImage) showAttachmentError("只支持 PNG、JPEG 或 WebP 图片。");
     return;
@@ -2369,11 +2630,16 @@ elements.promptInput.addEventListener("paste", (event) => {
 
   event.preventDefault();
   insertClipboardText(clipboardData?.getData?.("text/plain") ?? "");
-  if (hasUnsupportedImage) {
-    showAttachmentError("部分图片格式不受支持，仅保留 PNG、JPEG 或 WebP 图片。");
-  }
-  void addSelectedImages(files);
+  void addSelectedImages(files, {
+    warningMessage: hasUnsupportedImage
+      ? "部分图片格式不受支持，仅保留 PNG、JPEG 或 WebP 图片。"
+      : "",
+  });
 });
+elements.appShell.addEventListener("dragenter", handleImageDragEnter);
+elements.appShell.addEventListener("dragover", handleImageDragOver);
+elements.appShell.addEventListener("dragleave", handleImageDragLeave);
+elements.appShell.addEventListener("drop", handleImageDrop);
 elements.promptInput.addEventListener("keydown", (event) => {
   if (event.key === "Enter" && !event.shiftKey) {
     event.preventDefault();
@@ -2385,9 +2651,7 @@ elements.sendButton.addEventListener("click", () => {
   else void submitPrompt();
 });
 elements.easterTrigger.addEventListener("click", () => {
-  const active = elements.easterFooter.classList.toggle("is-active");
-  elements.easterTrigger.setAttribute("aria-pressed", String(active));
-  elements.easterTrigger.title = active ? "收起 ChatEx 彩蛋" : "打开 ChatEx 彩蛋";
+  footerAnimation.toggleManual();
 });
 elements.modelButton.addEventListener("click", toggleModelSettingsMenu);
 elements.modelSettingsModelRow.addEventListener("click", () => openModelSettingsSubmenu("model"));
@@ -2442,13 +2706,24 @@ document.addEventListener("keydown", (event) => {
     else closeMenus();
   }
 });
-globalThis.addEventListener?.("pagehide", stopRecoveryHeartbeat);
+globalThis.addEventListener?.("pagehide", () => {
+  clearImageDropTarget();
+  stopRecoveryHeartbeat();
+  footerAnimation.destroy();
+  footerStageResizeObserver?.disconnect();
+  globalThis.removeEventListener?.("resize", refreshFooterRunnerPositions);
+  reducedMotionQuery?.removeEventListener?.("change", handleReducedMotionChange);
+});
+globalThis.addEventListener?.("blur", clearImageDropTarget);
 
 setApprovalMode("required");
 resizePromptInput();
 renderAttachments();
 renderConversation();
 updateSendState();
+renderFooterAnimation(footerAnimation.snapshot());
+
+void loadAppVersion();
 
 if (legacyMode) {
   void initializeLegacy();

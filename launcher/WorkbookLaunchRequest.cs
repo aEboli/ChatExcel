@@ -5,6 +5,7 @@ internal enum WorkbookLaunchMode
     Default,
     Diagnose,
     Help,
+    ServiceOnly,
     OfficeAddIn,
     NativeXls,
 }
@@ -28,6 +29,7 @@ internal sealed record WorkbookLaunchRequest(WorkbookLaunchMode Mode, string? Wo
 
         if (args[0] == "--diagnose") return new WorkbookLaunchRequest(WorkbookLaunchMode.Diagnose);
         if (args[0] == "--help") return new WorkbookLaunchRequest(WorkbookLaunchMode.Help);
+        if (args[0] == "--service-only") return new WorkbookLaunchRequest(WorkbookLaunchMode.ServiceOnly);
         if (args[0].StartsWith("--", StringComparison.Ordinal))
         {
             throw new LauncherInputException("不支持该启动参数。");

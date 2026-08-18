@@ -225,6 +225,8 @@ test("DeepSeek V4 Flash 按官方 Chat Completions 格式控制思考", async ()
     await client.create({ input: [] });
 
     assert.deepEqual(captured.thinking, { type: effort === "none" ? "disabled" : "enabled" });
+    assert.equal(Object.hasOwn(captured, "max_tokens"), false);
+    assert.equal(Object.hasOwn(captured, "max_output_tokens"), false);
     if (effort === "none") assert.equal(Object.hasOwn(captured, "reasoning_effort"), false);
     else assert.equal(captured.reasoning_effort, effort);
   }
@@ -250,6 +252,8 @@ test("DeepSeek V4 Responses 将 none 显式发送为 reasoning.effort", async ()
   await client.create({ input: [] });
 
   assert.deepEqual(captured.reasoning, { effort: "none" });
+  assert.equal(Object.hasOwn(captured, "max_tokens"), false);
+  assert.equal(Object.hasOwn(captured, "max_output_tokens"), false);
 });
 
 test("Anthropic Messages 使用 base64 图片和 tool_result", async () => {

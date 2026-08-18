@@ -2,6 +2,27 @@
 
 All notable changes to ChatExcel are documented here.
 
+## [0.0.4] - 2026-08-18
+
+> Source synchronization only. No `v0.0.4` GitHub Release or Windows launcher package is published with this entry; `v0.0.3` remains the latest packaged release.
+
+### Added
+
+- Selectable system CLI configuration sources: Automatic (Codex CLI first), Codex CLI, and Claude CLI. Codex can recover `OPENAI_API_KEY` from its sibling `auth.json`; Claude reads the current user's Anthropic settings. Tokens remain inside the local Node.js service.
+- A double-click Windows source-checkout launcher, `首次安装并启动 ChatExcel.cmd`, with install, repair, and uninstall flows that validate Node.js, dependencies, the development certificate, the manifest, and sideload readiness.
+- PNG, JPEG, and WebP image drag-and-drop support in the task-pane composer, alongside the existing clipboard attachment flow.
+
+### Changed
+
+- System-configuration failures now keep the custom API form available, and the selected CLI source is persisted with rollback on a failed source switch.
+- Codex configuration accepts the `ultra` reasoning level; verified DeepSeek V4 metadata can show the maximum output capability in Settings.
+- Sideloading starts or reuses the project-local service before registering the add-in and opening Excel. Certificate verification remains compatible with the declared Node.js 20 baseline.
+
+### Known limitations
+
+- `native-addin/` contains experimental local probes. They are not bundled into the Windows launcher and require real Excel acceptance plus controlled signing before any distribution decision.
+- Desktop Excel acceptance is still required for long-running stream cancellation, live workbook edits, and native `.xls` compatibility.
+
 ## [0.0.3] - 2026-08-07
 
 ### Added

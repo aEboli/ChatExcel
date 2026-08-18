@@ -24,7 +24,7 @@ internal static class Program
         LauncherLog? log = null;
         try
         {
-            WorkbookLaunchRequest request;
+            WorkbookLaunchRequest? request = null;
             try
             {
                 request = WorkbookLaunchRequest.Parse(args);
@@ -33,16 +33,17 @@ internal static class Program
             {
                 throw new LauncherException(error.Message, "参数");
             }
+            var launchRequest = request;
 
             var appRoot = ResolveAppRoot();
             log = new LauncherLog(appRoot);
-            log.Write($"启动器开始，模式={request.Mode}，应用目录={appRoot}");
+            log.Write($"启动器开始，模式={launchRequest.Mode}，应用目录={appRoot}");
 
-            if (request.Mode == WorkbookLaunchMode.Help)
+            if (launchRequest.Mode == WorkbookLaunchMode.Help)
             {
                 MessageBox(
                     IntPtr.Zero,
-                    "双击启动 ChatExcel。\n\n把 .xls 拖到启动器：使用内置原生引擎。\n把 .xlsx、.xlsm 或 .xlsb 拖到启动器：使用 Office 加载项。\n\n--diagnose 只检查发行目录，不启动服务或 Excel。",
+                    "双击启动 ChatExcel。\n\n把 .xls 拖到启动器：使用内置原生引擎。\n把 .xlsx、.xlsm 或 .xlsb 拖到启动器：使用 Office 加载项。\n\n--diagnose 只检查发行目录，不启动服务或 Excel。\n--service-only 仅供登录自启动使用，只启动本地服务。",
                     AppName,
                     MessageBoxInformation);
                 return 0;
@@ -50,24 +51,29 @@ internal static class Program
 
             var nodePath = ResolveNode(appRoot);
             ValidateResources(appRoot);
-            if (request.Mode == WorkbookLaunchMode.Diagnose)
+            if (launchRequest.Mode == WorkbookLaunchMode.Diagnose)
             {
                 Diagnose(appRoot, nodePath, log);
                 log.Write("诊断通过");
                 return 0;
             }
 
-            EnsureCertificate(appRoot, nodePath, log);
+            EnsureCertificate(appRoot, nodePath, log, launchRequest.Mode != WorkbookLaunchMode.ServiceOnly);
             RunService(appRoot, nodePath, log);
-            if (request.Mode == WorkbookLaunchMode.NativeXls)
+            if (launchRequest.Mode == WorkbookLaunchMode.ServiceOnly)
             {
-                RunNativeXls(request.WorkbookPath!, log);
+                log.Write("登录自启动服务健康检查通过，未启动 Excel 或侧载流程");
+                return 0;
+            }
+            if (launchRequest.Mode == WorkbookLaunchMode.NativeXls)
+            {
+                RunNativeXls(launchRequest.WorkbookPath!, log);
                 log.Write("ChatExcel 原生 XLS 窗格已关闭，Excel 工作簿保持由用户控制");
                 return 0;
             }
 
-            RunSideload(appRoot, nodePath, log, request.WorkbookPath);
-            log.Write(request.Mode == WorkbookLaunchMode.OfficeAddIn
+            RunSideload(appRoot, nodePath, log, launchRequest.WorkbookPath);
+            log.Write(launchRequest.Mode == WorkbookLaunchMode.OfficeAddIn
                 ? "ChatExcel 服务已启动，现代工作簿已交给 Office 加载项"
                 : "ChatExcel 服务和 Excel 侧载流程已启动");
             return 0;
@@ -75,12 +81,14 @@ internal static class Program
         catch (LauncherException error)
         {
             log?.Write($"失败：阶段={error.Stage}，消息={error.Message}，详情={error.Detail}");
+            if (request?.Mode == WorkbookLaunchMode.ServiceOnly) return 1;
             ShowFailure(error.Message, error.Stage, error.Detail);
             return 1;
         }
         catch (Exception error)
         {
             log?.Write($"未预期失败：{error.Message}");
+            if (request?.Mode == WorkbookLaunchMode.ServiceOnly) return 1;
             ShowFailure("启动器遇到未预期错误。", "启动器", error.Message);
             return 1;
         }
@@ -199,10 +207,18 @@ internal static class Program
         }
     }
 
-    private static void EnsureCertificate(string appRoot, string nodePath, LauncherLog log)
+    private static void EnsureCertificate(string appRoot, string nodePath, LauncherLog log, bool allowInstall)
     {
         var verify = RunNode(appRoot, nodePath, "scripts/verify-certs.mjs", Array.Empty<string>());
         if (verify.ExitCode == 0) return;
+
+        if (!allowInstall)
+        {
+            throw new LauncherException(
+                "本地 HTTPS 开发证书尚未通过验证。请先手动运行一次 ChatExcel Launcher 完成证书信任。",
+                "证书",
+                verify.Error);
+        }
 
         var certificateCli = Path.Combine(appRoot, "node_modules", "office-addin-dev-certs", "cli.js");
         if (!File.Exists(certificateCli))

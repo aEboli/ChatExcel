@@ -7,6 +7,7 @@ import {
   ConfigError,
   loadCodexConfig,
   parseCodexConfig,
+  resolveCodexAuthPath,
   resolveCodexConfigPath,
   toPublicConfig,
 } from "../src/server/config.js";
@@ -79,6 +80,25 @@ env_key = "MISSING_MODEL_TOKEN"
   );
 });
 
+test("Codex CLI provider 使用 auth.json 中的 OPENAI_API_KEY", () => {
+  const source = `
+model_provider = "custom"
+model = "gpt-test"
+[model_providers.custom]
+base_url = "http://127.0.0.1:8080"
+wire_api = "responses"
+requires_openai_auth = true
+`;
+
+  const config = parseCodexConfig(source, {
+    env: {},
+    auth: { OPENAI_API_KEY: "codex-auth-secret" },
+  });
+
+  assert.equal(config.token, "codex-auth-secret");
+  assert.equal(config.tokenSource, "codex-auth");
+});
+
 test("拒绝非 Responses 协议", () => {
   const source = `
 model_provider = "custom"
@@ -117,4 +137,25 @@ test("从 CODEX_HOME 读取配置文件", async (t) => {
 
   assert.equal(config.configPath, join(directory, "config.toml"));
   assert.equal(resolveCodexConfigPath({ env: { CODEX_HOME: directory } }), config.configPath);
+  assert.equal(resolveCodexAuthPath({ env: { CODEX_HOME: directory } }), join(directory, "auth.json"));
+});
+
+test("从 Codex auth.json 恢复 CLI 凭据", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "excel-codex-auth-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const source = `
+model_provider = "custom"
+model = "gpt-test"
+[model_providers.custom]
+base_url = "http://127.0.0.1:8080"
+wire_api = "responses"
+requires_openai_auth = true
+`;
+  await writeFile(join(directory, "config.toml"), source, "utf8");
+  await writeFile(join(directory, "auth.json"), JSON.stringify({ OPENAI_API_KEY: "codex-auth-secret" }), "utf8");
+
+  const config = await loadCodexConfig({ env: { CODEX_HOME: directory } });
+
+  assert.equal(config.token, "codex-auth-secret");
+  assert.equal(config.tokenSource, "codex-auth");
 });

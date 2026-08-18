@@ -12,11 +12,20 @@
 
 不离开 Excel，读取当前工作表、理解工作簿上下文、粘贴参考图片，并在明确边界内完成可审计的修改。
 
-当前发行版：`v0.0.3` · 源码、Windows 启动器和 Release 资产保持同一版本
+最新打包发行版：`v0.0.3` · 当前源码快照：`v0.0.4`（尚未打包为 GitHub Release）
 
 </div>
 
 > 这份中文 README 是项目的详细使用说明；英文概览见 [README.md](README.md)。
+
+## v0.0.4 源码更新
+
+本次仅同步源码，不创建新的 Windows 启动器发行包；`v0.0.3` 仍是可下载的最新 GitHub Release。
+
+- **可恢复的系统配置：** 设置页可选择自动（优先 Codex CLI）、Codex CLI 或 Claude CLI。Codex 可从同目录 `auth.json` 读取 `OPENAI_API_KEY`，Claude 读取当前用户的 Anthropic 配置；令牌始终只在本地服务中使用。
+- **源码安装启动器：** `首次安装并启动 ChatExcel.cmd` 为 Windows 源码目录提供安装、修复和卸载菜单；在打开 Excel 前校验 Node.js、依赖、开发证书、清单和旁加载就绪状态。
+- **任务窗格恢复与图片拖放：** 系统配置失败时仍可使用自定义 API 表单；除原有剪贴板流程外，也可将 PNG、JPEG、WebP 图片拖入输入区。
+- **更可靠的旁加载：** 侧载脚本会先启动或复用项目本地服务，再注册加载项并打开 Excel。
 
 ## v0.0.3 更新
 
@@ -95,6 +104,8 @@ Microsoft Excel 任务窗格（Office.js）
 
 ### 源码开发
 
+首次使用 Windows 源码目录时，可直接双击仓库根目录的 `首次安装并启动 ChatExcel.cmd`。启动器会显示数字菜单：`1` 安装或重装项目并在 Excel 中旁加载 ChatExcel，`2` 注销本项目加载项、停止本地服务并删除项目依赖，`3` 退出。执行卸载前请关闭所有 Excel 窗口；卸载不会删除源码或本地开发证书。
+
 ```powershell
 git clone https://github.com/aEboli/ChatExcel.git
 cd ChatExcel
@@ -138,6 +149,8 @@ wire_api = "responses"
 env_key = "LOCAL_MODEL_TOKEN"
 ```
 
+设置页的“系统 CLI 来源”支持自动（优先 Codex CLI）、Codex CLI 和 Claude CLI。Codex CLI 会读取用户级 `.codex/config.toml` 及同目录 `auth.json`；Claude CLI 会读取 `.claude/settings.json` 中的 Anthropic 配置。令牌只在本地服务中使用，不会进入 Excel 任务窗格。
+
 如果使用自定义提供方，在设置页关闭“使用系统 WorkBuddy 配置”，选择协议，填写 API 主地址和密钥，获取模型，再选择上下文长度、思考等级和最大步骤数。非密钥设置保存在 `%APPDATA%\ChatExcel\settings.json`；API Key 使用当前 Windows 用户 DPAPI 加密，明文只在本地服务进程运行期间存在。
 
 ## 图片输入与恢复边界
@@ -163,6 +176,7 @@ ChatExcel/
 |-- assets/                  # 图标、本地界面资源和截图
 |-- docs/                    # 验证说明
 |-- launcher/                # .NET Windows 启动器
+|-- native-addin/            # 实验性的本地原生宿主探针
 |-- openspec/                # 当前规格与已归档变更
 |-- scripts/                 # 证书、生命周期、侧载、构建和打包脚本
 |-- src/server/              # 本地 HTTPS 服务、会话、恢复和协议适配
@@ -195,6 +209,7 @@ git diff --check
 - 当前发行版面向 Windows x64，侧载源码流程需要受信任的 Office 本地开发证书。
 - 未知提供方模型在拿到明确元数据前使用保守的“自动”思考模式。
 - 图片功能取决于所选模型或网关是否支持兼容的多模态输入。
+- `native-addin/` 仅包含实验性的本地探针，不会随 Windows 启动器分发，也不属于生产迁移路径。
 - Marketplace 发布、多用户云服务、宏、VBA、Power Query、透视表自动化、工作簿快照和破坏性回滚不在当前范围。
 
 ## 版本、更新日志与许可证

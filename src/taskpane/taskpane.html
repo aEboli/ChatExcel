@@ -10,12 +10,14 @@
   <body>
     <div class="app-shell" id="app-shell">
       <header class="topbar glass-surface">
-        <img class="brand-icon" src="/assets/icon-32.png" alt="" width="32" height="32" />
-        <div class="brand-copy">
-          <h1>ChatExcel</h1>
-          <div class="workbook-status" id="workbook-status" title="正在连接当前工作簿">
-            <span class="status-dot is-loading" id="status-dot"></span>
-            <span class="workbook-label" id="workbook-label">正在连接</span>
+        <div class="topbar-brand">
+          <img class="brand-icon" src="/assets/icon-32.png" alt="" width="32" height="32" />
+          <div class="brand-copy">
+            <h1>ChatExcel</h1>
+            <div class="workbook-status" id="workbook-status" title="正在连接当前工作簿">
+              <span class="status-dot is-loading" id="status-dot"></span>
+              <span class="workbook-label" id="workbook-label">正在连接</span>
+            </div>
           </div>
         </div>
         <button class="icon-button" id="settings-button" type="button" title="设置" aria-label="打开设置">
@@ -53,7 +55,11 @@
       <main class="conversation" id="conversation" aria-live="polite">
         <div class="empty-state" id="empty-state">
           <img src="/assets/fluent/model.svg" alt="" />
-          <strong>准备就绪</strong>
+          <div class="empty-state-copy">
+            <strong>你好，我是 ChatExcel，当前工作簿旁的 AI Agent</strong>
+            <p>读取和分析工作簿与选区；写入值和公式，设置格式和数字格式，自动调整、清除、管理工作表，创建表格和图表并排序。</p>
+            <p>模型与推理可选；支持粘贴 PNG/JPEG/WebP 图片；流式反馈、修改审批、操作只读预览和文本会话短暂恢复。</p>
+          </div>
         </div>
       </main>
 
@@ -82,6 +88,7 @@
 
       <footer class="composer-shell glass-surface">
         <div class="composer" id="composer">
+          <div class="image-drop-hint" id="image-drop-hint" role="status" hidden>松开以添加图片</div>
           <div class="attachment-error" id="attachment-error" role="alert" hidden></div>
           <div class="attachment-list" id="attachment-list" aria-label="待发送图片" hidden></div>
           <label class="sr-only" for="prompt-input">工作簿任务</label>
@@ -180,12 +187,12 @@
           class="easter-trigger"
           id="easter-trigger"
           type="button"
-          title="打开 ChatEx 彩蛋"
-          aria-label="打开 ChatEx 页脚彩蛋"
+          title="开始页脚多人赛跑"
+          aria-label="开始页脚多人赛跑"
           aria-pressed="false"
         >
         </button>
-        <div class="easter-stage" aria-hidden="true">
+        <div class="easter-stage" id="easter-stage" aria-hidden="true">
           <span class="easter-sun"></span>
           <span class="easter-hills"></span>
           <span class="easter-field"></span>
@@ -197,7 +204,9 @@
           <span class="easter-walker walker-four"><img src="/assets/easter-characters/runner-coral-wide.webp" alt="" /></span>
           <span class="easter-walker walker-five"><img src="/assets/easter-characters/runner-pony-close.webp" alt="" /></span>
           <span class="easter-walker walker-six"><img src="/assets/easter-characters/runner-sunset-wide.webp" alt="" /></span>
+          <span class="easter-count" id="easter-count"></span>
         </div>
+        <span class="sr-only" id="easter-status" role="status" aria-live="polite">页脚多人赛跑尚未开始</span>
       </footer>
 
       <section class="settings-view" id="settings-view" aria-labelledby="settings-title" hidden>
@@ -205,9 +214,12 @@
           <button class="icon-button" id="settings-back-button" type="button" title="返回" aria-label="返回聊天">
             <img src="/assets/fluent/back.svg" alt="" />
           </button>
-          <div>
-            <h2 id="settings-title">配置</h2>
-            <span>ChatExcel</span>
+          <div class="settings-heading">
+            <div>
+              <h2 id="settings-title">配置</h2>
+              <span>ChatExcel</span>
+            </div>
+            <span class="app-version" id="app-version" data-version-state="loading" role="status" title="正在读取 ChatExcel 版本" aria-label="正在读取 ChatExcel 版本">v--</span>
           </div>
         </header>
 
@@ -215,8 +227,8 @@
           <section class="settings-section">
             <div class="setting-row toggle-row">
               <div>
-                <label for="use-system-config">使用系统 Codex 配置</label>
-                <p>开启时自动读取当前电脑配置</p>
+                <label for="use-system-config">使用系统 CLI 配置</label>
+                <p>开启时自动读取当前电脑的 Codex 或 Claude CLI 配置</p>
               </div>
               <label class="switch">
                 <input id="use-system-config" type="checkbox" checked />
@@ -229,6 +241,10 @@
                 <span id="system-endpoint"></span>
               </div>
               <button class="inline-button" id="fetch-system-models-button" type="button">获取模型</button>
+            </div>
+            <div class="system-source-field">
+              <label class="field-label" for="system-config-source">系统 CLI 来源</label>
+              <select id="system-config-source" name="systemSource"></select>
             </div>
           </section>
 
