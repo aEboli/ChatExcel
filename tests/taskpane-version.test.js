@@ -14,7 +14,7 @@ const [packageJson, packageLock, taskpaneHtml, taskpaneCss, taskpaneJs, appInfo,
 ]);
 
 test("发行版本从根包同步到锁文件和健康接口", () => {
-  assert.equal(packageJson.version, "0.0.4");
+  assert.equal(packageJson.version, "0.0.5");
   assert.equal(packageLock.version, packageJson.version);
   assert.equal(packageLock.packages[""].version, packageJson.version);
   assert.match(appInfo, /APP_VERSION = packageManifest\.version/);

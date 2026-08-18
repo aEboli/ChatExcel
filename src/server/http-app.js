@@ -10,7 +10,7 @@ import { createLegacyWorkbookBridge } from "./legacy-workbook-bridge.js";
 const moduleDirectory = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(moduleDirectory, "..", "..");
 const defaultAllowedHosts = new Set([`localhost:${SERVICE_PORT}`, `127.0.0.1:${SERVICE_PORT}`]);
-const defaultAllowedOrigins = new Set([SERVICE_ORIGIN, `https://127.0.0.1:${SERVICE_PORT}`]);
+const defaultAllowedOrigins = new Set([SERVICE_ORIGIN, `https://localhost:${SERVICE_PORT}`]);
 
 const contentSecurityPolicy = [
   "default-src 'self'",

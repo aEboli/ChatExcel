@@ -6,16 +6,16 @@
   xmlns:ov="http://schemas.microsoft.com/office/taskpaneappversionoverrides"
   xsi:type="TaskPaneApp">
   <Id>c5458d28-94d9-4f71-a17d-79f318b9722c</Id>
-  <Version>1.0.0.0</Version>
+  <Version>1.0.0.1</Version>
   <ProviderName>本地</ProviderName>
   <DefaultLocale>zh-CN</DefaultLocale>
   <DisplayName DefaultValue="ChatExcel" />
   <Description DefaultValue="复用系统 Codex 配置或自定义模型接口的 Excel 助手。" />
-  <IconUrl DefaultValue="https://localhost:3210/assets/icon-32.png" />
-  <HighResolutionIconUrl DefaultValue="https://localhost:3210/assets/icon-64.png" />
-  <SupportUrl DefaultValue="https://localhost:3210/taskpane.html" />
+  <IconUrl DefaultValue="https://127.0.0.1:3210/assets/icon-32.png" />
+  <HighResolutionIconUrl DefaultValue="https://127.0.0.1:3210/assets/icon-64.png" />
+  <SupportUrl DefaultValue="https://127.0.0.1:3210/taskpane.html" />
   <AppDomains>
-    <AppDomain>https://localhost:3210</AppDomain>
+    <AppDomain>https://127.0.0.1:3210</AppDomain>
   </AppDomains>
   <Hosts>
     <Host Name="Workbook" />
@@ -26,7 +26,7 @@
     </Sets>
   </Requirements>
   <DefaultSettings>
-    <SourceLocation DefaultValue="https://localhost:3210/taskpane.html" />
+    <SourceLocation DefaultValue="https://127.0.0.1:3210/taskpane.html" />
   </DefaultSettings>
   <Permissions>ReadWriteDocument</Permissions>
   <VersionOverrides
@@ -69,13 +69,13 @@
     </Hosts>
     <Resources>
       <bt:Images>
-        <bt:Image id="Icon.16" DefaultValue="https://localhost:3210/assets/icon-16.png" />
-        <bt:Image id="Icon.32" DefaultValue="https://localhost:3210/assets/icon-32.png" />
-        <bt:Image id="Icon.80" DefaultValue="https://localhost:3210/assets/icon-80.png" />
+        <bt:Image id="Icon.16" DefaultValue="https://127.0.0.1:3210/assets/icon-16.png" />
+        <bt:Image id="Icon.32" DefaultValue="https://127.0.0.1:3210/assets/icon-32.png" />
+        <bt:Image id="Icon.80" DefaultValue="https://127.0.0.1:3210/assets/icon-80.png" />
       </bt:Images>
       <bt:Urls>
-        <bt:Url id="Commands.Url" DefaultValue="https://localhost:3210/commands.html" />
-        <bt:Url id="Taskpane.Url" DefaultValue="https://localhost:3210/taskpane.html" />
+        <bt:Url id="Commands.Url" DefaultValue="https://127.0.0.1:3210/commands.html" />
+        <bt:Url id="Taskpane.Url" DefaultValue="https://127.0.0.1:3210/taskpane.html" />
       </bt:Urls>
       <bt:ShortStrings>
         <bt:String id="LocalAgent.GroupLabel" DefaultValue="ChatEx" />

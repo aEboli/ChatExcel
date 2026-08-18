@@ -2,6 +2,26 @@
 
 All notable changes to ChatExcel are documented here.
 
+## [0.0.5] - 2026-08-19
+
+> Published as GitHub Release `v0.0.5` with the Windows x64 launcher package and a matching SHA-256 file.
+
+### Added
+
+- A current-user Windows login startup entry after a successful default launcher run or modern Office.js workbook sideload. It starts or reuses only the local service after the next sign-in and never opens Excel or reruns sideloading.
+- Ownership-safe source uninstall behavior: it removes the startup value only when it still exactly belongs to the current project directory.
+- A bounded retry during Excel initialization for transient local `/api/config` connection failures, while permanent HTTP and configuration errors remain visible.
+
+### Changed
+
+- Office manifest resources and the native `.xls` companion now use `https://127.0.0.1:3210`, the address actually bound by the local service, rather than relying on `localhost` resolving to IPv4.
+- The Launcher validates the startup-registration resource in the packaged application and registers its own quoted `--service-only` path only after successful Office.js sideloading.
+
+### Known limitations
+
+- The native `.xls` companion does not create the login startup entry on its own. Run the Launcher once without an `.xls` argument, or with a modern `.xlsx`, `.xlsm`, or `.xlsb` workbook, to register it.
+- Desktop Excel acceptance remains required to verify a real task-pane launch after a Windows sign-in. If Windows Startup apps disables `ChatExcel Local Service`, re-enable it and sign in again.
+
 ## [0.0.4] - 2026-08-19
 
 > Published as GitHub Release `v0.0.4` with the Windows x64 launcher package and a matching SHA-256 file.
@@ -91,3 +111,4 @@ The first GitHub release of the local Excel agent.
 [0.0.2]: https://github.com/aEboli/ChatExcel/releases/tag/v0.0.2
 [0.0.3]: https://github.com/aEboli/ChatExcel/releases/tag/v0.0.3
 [0.0.4]: https://github.com/aEboli/ChatExcel/releases/tag/v0.0.4
+[0.0.5]: https://github.com/aEboli/ChatExcel/releases/tag/v0.0.5

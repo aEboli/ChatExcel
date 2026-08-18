@@ -2,7 +2,7 @@
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/version-v0.0.4-107c41.svg)](https://github.com/aEboli/ChatExcel/releases/tag/v0.0.4)
+[![Version](https://img.shields.io/badge/version-v0.0.5-107c41.svg)](https://github.com/aEboli/ChatExcel/releases/tag/v0.0.5)
 [![Node.js](https://img.shields.io/badge/Node.js-%3E%3D20-339933.svg)](https://nodejs.org/)
 [![Microsoft Excel](https://img.shields.io/badge/Microsoft-Excel-217346.svg)](https://www.microsoft.com/microsoft-365/excel)
 [![Windows](https://img.shields.io/badge/Windows-x64-0078d4.svg)](https://github.com/aEboli/ChatExcel/releases)
@@ -12,11 +12,18 @@
 
 Inspect sheets, reason over workbook context, paste reference images, and perform controlled Excel edits from one compact task pane.
 
-Latest packaged release: `v0.0.4`
+Latest packaged release: `v0.0.5`
 
 </div>
 
 > The Chinese README is the primary, more detailed guide: [README.zh-CN.md](README.zh-CN.md). This English page is a concise project overview.
+
+## What's new in v0.0.5
+
+- **Ready after sign-in:** A successful default launcher run or `.xlsx`, `.xlsm`, or `.xlsb` sideload registers a current-user background service startup entry. It starts only the local service after the next Windows sign-in, never Excel or a sideload flow.
+- **Reliable loopback origin:** The Office manifest and native `.xls` companion now use the service's actual `https://127.0.0.1:3210` listener, avoiding a Windows `localhost` resolution to the unbound `::1` endpoint.
+- **Startup race recovery:** The task pane retries transient local configuration connection failures for a bounded interval during Excel initialization, while permanent HTTP and configuration errors remain visible.
+- **Scoped cleanup:** The source installer removes only the exact startup entry belonging to its own project directory. Manual `npm run start:local` and `npm run sideload` remain an active-session development flow and do not create a login startup entry.
 
 ## What's new in v0.0.4
 
@@ -93,16 +100,18 @@ Provider catalogs and compatible gateways vary. Model discovery or a successful 
 
 ### Packaged Windows launcher
 
-1. Download `ChatExcel-Launcher-0.0.4-win-x64.zip` from [GitHub Releases](https://github.com/aEboli/ChatExcel/releases/tag/v0.0.4).
+1. Download `ChatExcel-Launcher-0.0.5-win-x64.zip` from [GitHub Releases](https://github.com/aEboli/ChatExcel/releases/tag/v0.0.5).
 2. Verify the adjacent `.sha256` file if needed, then extract the whole archive.
 3. Run `ChatExcel Launcher.exe`.
 4. In Excel, open the `ChatEx` ribbon group and choose `Open ChatExcel`.
+
+A successful default launcher run or `.xlsx`, `.xlsm`, or `.xlsb` sideload registers a background service startup entry for the current Windows user. On later Windows sign-ins, you can open Excel and choose ChatExcel without running the launcher first. The startup entry only starts the local service; it does not open Excel. If you move the extracted directory, run the launcher once from the new location to update the path. The native `.xls` companion does not register this entry by itself; first complete one default or modern-workbook launcher run.
 
 The package includes its own Node.js runtime and launcher dependencies. The target computer still needs Windows 10/11 and Microsoft Excel 2019 or Microsoft 365 desktop. WPS is not supported. Existing `.xls` workbooks also require WebView2.
 
 ### Source development
 
-For a Windows source checkout, double-click `首次安装并启动 ChatExcel.cmd` in the repository root. The numeric menu offers `1` to install or reinstall and sideload ChatExcel in Excel, `2` to unregister this project's add-in, stop its local service, and remove project dependencies, and `3` to exit. Close all Excel windows before uninstalling; the source files and local development certificate are kept.
+For a Windows source checkout, double-click `首次安装并启动 ChatExcel.cmd` in the repository root. The numeric menu offers `1` to install or reinstall, sideload ChatExcel, and register the current-user background service startup entry; `2` to remove only this project's startup entry, unregister its add-in, stop its local service, and remove project dependencies; and `3` to exit. Close all Excel windows before uninstalling; the source files and local development certificate are kept.
 
 ```powershell
 git clone https://github.com/aEboli/ChatExcel.git
@@ -116,7 +125,9 @@ npm run start:local
 npm run sideload
 ```
 
-The companion service listens only on `https://localhost:3210`. Stop the project-owned service and supervisor with `npm run stop:local`.
+This explicit command flow is for the active development session and does not register a login startup entry; use menu `1` in `首次安装并启动 ChatExcel.cmd` when persistent service readiness is required.
+
+The companion service listens only on `https://127.0.0.1:3210`. The manifest uses the same IPv4 loopback address so Windows cannot resolve `localhost` to the unbound `::1` endpoint. `npm run stop:local` explicitly stops the project-owned service and supervisor for the current sign-in session; Excel clicks do not restart it, while the registered current-user startup entry restores it after the next sign-in. If Windows Startup apps disables `ChatExcel Local Service`, re-enable it and sign in again; running the installer or launcher manually can restore its registered path but cannot override a user-disabled startup item.
 
 ## Existing workbook formats
 
@@ -201,7 +212,7 @@ git diff --check
 
 ## Release and license
 
-- Latest packaged release: [ChatExcel v0.0.4](https://github.com/aEboli/ChatExcel/releases/tag/v0.0.4)
+- Latest packaged release: [ChatExcel v0.0.5](https://github.com/aEboli/ChatExcel/releases/tag/v0.0.5)
 - Changelog: [CHANGELOG.md](CHANGELOG.md)
 - Detailed Chinese guide: [README.zh-CN.md](README.zh-CN.md)
 - No license has been selected. Add a license before distributing the project outside the owning organization.

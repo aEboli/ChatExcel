@@ -21,6 +21,7 @@ async function createInstallFixture(t) {
   const scriptPath = join(root, "scripts", "first-install.ps1");
   const fakeBin = join(root, "fake-bin");
   const logPath = join(root, "commands.log");
+  const startupLogPath = join(root, "startup-commands.log");
   const certificateState = join(root, "certificate-ready");
   const npmStub = join(root, "npm-stub.mjs");
 
@@ -32,6 +33,10 @@ async function createInstallFixture(t) {
   await writeFixtureFile(root, "manifest.xml", "<OfficeApp />\n");
   await writeFixtureFile(root, "scripts/start.ps1", "# fixture\n");
   await writeFixtureFile(root, "scripts/stop.ps1", "# fixture\n");
+  await writeFixtureFile(root, "scripts/startup-registration.ps1", `
+param([string]$Action)
+Add-Content -LiteralPath $env:CHATEXCEL_TEST_STARTUP_LOG -Value $Action -Encoding utf8
+`);
   await writeFixtureFile(root, "scripts/service-supervisor.ps1", "# fixture\n");
   await writeFixtureFile(root, "scripts/sideload.mjs", "// fixture\n");
   await writeFixtureFile(root, "src/server/index.js", "// fixture\n");
@@ -69,22 +74,26 @@ if (args[0] === "run" && args[1] === "certs:install") {
   writeFileSync(process.env.CHATEXCEL_TEST_CERTIFICATE_STATE, "ready");
   process.exit(0);
 }
+if (args[0] === "run" && args[1] === "sideload" && process.env.CHATEXCEL_TEST_SIDELOAD_FAILURE === "1") process.exit(23);
 if (args[0] === "run" && ["validate:manifest", "sideload"].includes(args[1])) process.exit(0);
 process.exit(90);
 `, "utf8");
   await writeFile(join(fakeBin, "npm.cmd"), "@echo off\r\n\"%CHATEXCEL_TEST_NODE%\" \"%CHATEXCEL_TEST_NPM_STUB%\" %*\r\nexit /b %ERRORLEVEL%\r\n", "ascii");
   await writeFile(logPath, "", "utf8");
+  await writeFile(startupLogPath, "", "utf8");
 
   return {
     root,
     scriptPath,
     logPath,
+    startupLogPath,
     environment: {
       ...process.env,
       PATH: `${fakeBin};${process.env.PATH ?? ""}`,
       CHATEXCEL_TEST_NODE: process.execPath,
       CHATEXCEL_TEST_NPM_STUB: npmStub,
       CHATEXCEL_TEST_LOG: logPath,
+      CHATEXCEL_TEST_STARTUP_LOG: startupLogPath,
       CHATEXCEL_TEST_CERTIFICATE_STATE: certificateState,
     },
   };
@@ -120,7 +129,14 @@ test("初次安装脚本使用 PowerShell 5.1 可用的依赖校验并复用现�
   assert.match(script, /@\("run", "certs:install"\)/);
   assert.match(script, /@\("run", "validate:manifest"\)/);
   assert.match(script, /@\("run", "sideload"\)/);
+  assert.match(script, /scripts\\startup-registration\.ps1/);
+  assert.match(script, /@\("run", "sideload"\)[\s\S]*?-Action", "Install"/);
   assert.match(script, /@\("run", "unregister"\)/);
+  assert.match(script, /-Action", "Uninstall"/);
+  assert.ok(
+    script.lastIndexOf('-Action", "Uninstall"') > script.indexOf('Remove-ProjectDirectory $runtimeDirectory ".runtime"'),
+    "登录启动项应在其余卸载清理成功后才移除",
+  );
   assert.match(script, /Remove-ProjectDirectory \$nodeModulesDirectory "node_modules"/);
   assert.match(script, /Get-Process -Name EXCEL/);
   assert.match(script, /function Remove-ProjectDirectory/);
@@ -166,6 +182,7 @@ test("Windows 卸载仅删除项目依赖并保留源码目录", { skip: process
   await mkdir(scriptDirectory, { recursive: true });
   await mkdir(dependencyDirectory, { recursive: true });
   await copyFile(resolve(projectRoot, "scripts", "first-install.ps1"), fixtureScript);
+  await writeFile(join(scriptDirectory, "startup-registration.ps1"), "param([string]$Action)\n", "utf8");
   await writeFile(join(dependencyDirectory, "sentinel.txt"), "dependency", "utf8");
   await writeFile(join(fixtureRoot, "README.keep"), "source", "utf8");
 
@@ -203,4 +220,23 @@ test("Windows 安装动作按锁文件重装依赖、准备证书并旁加载", 
     ["run", "validate:manifest"],
     ["run", "sideload"],
   ]);
+  assert.equal((await readFile(fixture.startupLogPath, "utf8")).trim(), "Install");
+});
+
+test("Windows 旁加载失败时不登记登录启动项", { skip: process.platform !== "win32" }, async (t) => {
+  const fixture = await createInstallFixture(t);
+  const powershellPath = join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+  const result = spawnSync(
+    powershellPath,
+    ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", fixture.scriptPath, "-Action", "Install"],
+    {
+      cwd: fixture.root,
+      env: { ...fixture.environment, CHATEXCEL_TEST_SIDELOAD_FAILURE: "1" },
+      encoding: "utf8",
+      timeout: 20_000,
+    },
+  );
+
+  assert.equal(result.status, 1, result.stderr || result.stdout);
+  assert.equal((await readFile(fixture.startupLogPath, "utf8")).trim(), "");
 });

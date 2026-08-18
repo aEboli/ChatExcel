@@ -198,7 +198,7 @@ internal sealed class LegacyWorkbookHost : Form
             webView.CoreWebView2.Settings.AreDevToolsEnabled = false;
             webView.CoreWebView2.Settings.AreDefaultContextMenusEnabled = false;
             webView.CoreWebView2.Settings.IsStatusBarEnabled = false;
-            webView.CoreWebView2.Navigate($"https://localhost:3210/taskpane.html?legacy={sessionId}");
+            webView.CoreWebView2.Navigate($"https://127.0.0.1:3210/taskpane.html?legacy={sessionId}");
         }
         catch (Exception error)
         {

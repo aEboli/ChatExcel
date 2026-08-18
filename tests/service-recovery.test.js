@@ -61,6 +61,8 @@ test("受控恢复冒烟脚本隔离外部监听并验证停止后的状态", as
   assert.match(smokeScript, /ExternalListenerPreserved/);
   assert.match(smokeScript, /RecoveredManagedPid/);
   assert.match(smokeScript, /ExplicitStopPreventedRestart/);
+  assert.match(smokeScript, /\$serviceAddress = "127\.0\.0\.1"/);
+  assert.match(smokeScript, /\$healthUrl = "https:\/\/\$\{serviceAddress\}:\$servicePort\/api\/health"/);
   assert.match(smokeScript, /Start-Process/);
   assert.equal(
     packageJson.scripts["test:service-recovery"],

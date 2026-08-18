@@ -7,4 +7,4 @@ export const APP_NAME = "ChatExcel";
 export const APP_VERSION = packageManifest.version;
 export const SERVICE_HOST = "127.0.0.1";
 export const SERVICE_PORT = 3210;
-export const SERVICE_ORIGIN = `https://localhost:${SERVICE_PORT}`;
+export const SERVICE_ORIGIN = `https://${SERVICE_HOST}:${SERVICE_PORT}`;

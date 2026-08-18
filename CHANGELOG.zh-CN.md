@@ -2,6 +2,26 @@
 
 这里记录 ChatExcel 的重要版本变化。
 
+## [0.0.5] - 2026-08-19
+
+> 已正式发布为 GitHub Release `v0.0.5`，包含 Windows x64 启动器发行包及对应 SHA-256 校验文件。
+
+### 新增
+
+- 默认启动成功或现代 Office.js 工作簿侧载成功后，登记当前用户 Windows 登录启动项。下次登录时它只启动或复用本地服务，绝不打开 Excel 或重新旁加载。
+- 源码卸载采用所有权保护：只有启动项仍完整指向当前项目目录时才会移除。
+- Excel 初始化期间遇到本地 `/api/config` 短暂连接失败时执行有界重试；永久 HTTP 和配置错误仍会明确显示。
+
+### 变更
+
+- Office 清单资源和原生 `.xls` 伴随窗格统一改用本地服务实际绑定的 `https://127.0.0.1:3210`，不再依赖 `localhost` 解析到 IPv4。
+- Launcher 将启动项登记脚本列为发行资源，并且只在 Office.js 侧载成功后登记自身已完整引用的 `--service-only` 路径。
+
+### 已知限制
+
+- 原生 `.xls` 伴随路径本身不会创建登录启动项。请先不带 `.xls` 参数启动一次 Launcher，或使用现代 `.xlsx`、`.xlsm`、`.xlsb` 工作簿启动一次，以登记该项。
+- 仍需在真实桌面 Excel 中确认 Windows 登录后的任务窗格可打开。若 Windows“启动应用”禁用了 `ChatExcel Local Service`，请重新启用后再登录。
+
 ## [0.0.4] - 2026-08-19
 
 > 已正式发布为 GitHub Release `v0.0.4`，包含 Windows x64 启动器发行包及对应 SHA-256 校验文件。
@@ -91,3 +111,4 @@ ChatExcel 首个 GitHub 发行版。
 [0.0.2]: https://github.com/aEboli/ChatExcel/releases/tag/v0.0.2
 [0.0.3]: https://github.com/aEboli/ChatExcel/releases/tag/v0.0.3
 [0.0.4]: https://github.com/aEboli/ChatExcel/releases/tag/v0.0.4
+[0.0.5]: https://github.com/aEboli/ChatExcel/releases/tag/v0.0.5

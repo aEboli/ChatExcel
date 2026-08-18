@@ -73,6 +73,7 @@ internal static class Program
             }
 
             RunSideload(appRoot, nodePath, log, launchRequest.WorkbookPath);
+            InstallLoginStartup(appRoot, nodePath, log);
             log.Write(launchRequest.Mode == WorkbookLaunchMode.OfficeAddIn
                 ? "ChatExcel 服务已启动，现代工作簿已交给 Office 加载项"
                 : "ChatExcel 服务和 Excel 侧载流程已启动");
@@ -150,6 +151,7 @@ internal static class Program
         {
             "manifest.xml",
             "scripts/start.ps1",
+            "scripts/startup-registration.ps1",
             "scripts/service-supervisor.ps1",
             "scripts/sideload.mjs",
             "scripts/verify-certs.mjs",
@@ -273,15 +275,53 @@ internal static class Program
         log.Write("Excel 侧载脚本已完成");
     }
 
+    private static void InstallLoginStartup(string appRoot, string nodePath, LauncherLog log)
+    {
+        var launcherPath = Environment.ProcessPath;
+        if (string.IsNullOrWhiteSpace(launcherPath) ||
+            !File.Exists(launcherPath) ||
+            !string.Equals(Path.GetExtension(launcherPath), ".exe", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new LauncherException("无法确定当前 ChatExcel Launcher 路径。", "登录启动项");
+        }
+
+        var scriptPath = Path.Combine(appRoot, "scripts", "startup-registration.ps1");
+        var result = RunPowerShellScript(
+            appRoot,
+            nodePath,
+            scriptPath,
+            new[] { "-Action", "Install", "-LauncherPath", launcherPath },
+            captureOutput: true);
+        if (result.ExitCode != 0)
+        {
+            throw new LauncherException(
+                "无法登记 ChatExcel 当前用户登录启动项。",
+                "登录启动项",
+                result.Error);
+        }
+        log.Write("当前用户登录启动项已登记");
+    }
+
     private static ProcessResult RunPowerShell(string appRoot, string nodePath, string scriptPath)
+    {
+        return RunPowerShellScript(appRoot, nodePath, scriptPath, Array.Empty<string>(), captureOutput: false);
+    }
+
+    private static ProcessResult RunPowerShellScript(
+        string appRoot,
+        string nodePath,
+        string scriptPath,
+        IReadOnlyList<string> extraArguments,
+        bool captureOutput)
     {
         var powershell = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
         if (!File.Exists(powershell)) powershell = "powershell.exe";
-        var arguments = new[] { "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath };
+        var arguments = new List<string> { "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath };
+        arguments.AddRange(extraArguments);
         // start.ps1 launches a long-lived recovery supervisor. Do not capture the
         // PowerShell streams here: its service child can inherit those handles and
         // keep ReadToEndAsync waiting after PowerShell itself has exited.
-        return RunProcess(powershell, arguments, appRoot, Path.GetDirectoryName(nodePath), TimeSpan.FromMinutes(2), captureOutput: false);
+        return RunProcess(powershell, arguments, appRoot, Path.GetDirectoryName(nodePath), TimeSpan.FromMinutes(2), captureOutput);
     }
 
     private static ProcessResult RunNode(string appRoot, string nodePath, string scriptPath, IReadOnlyList<string> extraArguments, TimeSpan? timeout = null)

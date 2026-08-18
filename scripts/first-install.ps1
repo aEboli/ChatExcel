@@ -9,6 +9,8 @@ Set-StrictMode -Version Latest
 
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $dependencyStatePath = Join-Path $projectRoot "node_modules\.chatexcel-dependency-state"
+$startupRegistrationScript = Join-Path $projectRoot "scripts\startup-registration.ps1"
+$windowsPowerShellPath = Join-Path $env:WINDIR "System32\WindowsPowerShell\v1.0\powershell.exe"
 $requiredDependencies = @(
     "node_modules\.package-lock.json",
     "node_modules\express\package.json",
@@ -149,6 +151,7 @@ function Assert-InstallPrerequisites {
         "manifest.xml",
         "scripts\start.ps1",
         "scripts\stop.ps1",
+        "scripts\startup-registration.ps1",
         "scripts\service-supervisor.ps1",
         "scripts\sideload.mjs",
         "scripts\verify-certs.mjs",
@@ -228,8 +231,14 @@ function Invoke-Install {
         Write-Stage "启动本地服务并在 Microsoft Excel 中旁加载 ChatExcel"
         Invoke-CheckedProcess $tools.NpmPath @("run", "sideload") "Excel 加载项旁加载失败"
 
+        Write-Stage "登记当前用户登录启动项"
+        Invoke-CheckedProcess $windowsPowerShellPath @(
+            "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass",
+            "-File", $startupRegistrationScript, "-Action", "Install"
+        ) "ChatExcel 登录启动项登记失败"
+
         Write-Host ""
-        Write-Host "ChatExcel 已启动。请在 Excel 的“开始”选项卡中找到 ChatEx。" -ForegroundColor Green
+        Write-Host "ChatExcel 已启动。以后登录 Windows 后可直接从 Excel 加载项打开。" -ForegroundColor Green
     }
 }
 
@@ -281,8 +290,16 @@ function Invoke-Uninstall {
             Remove-ProjectDirectory $runtimeDirectory ".runtime"
         }
 
+        if (Test-Path -LiteralPath $startupRegistrationScript -PathType Leaf) {
+            Write-Stage "移除当前项目登录启动项"
+            Invoke-CheckedProcess $windowsPowerShellPath @(
+                "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                "-File", $startupRegistrationScript, "-Action", "Uninstall"
+            ) "ChatExcel 登录启动项移除失败"
+        }
+
         Write-Host ""
-        Write-Host "ChatExcel 已卸载：加载项注册、项目依赖和运行时文件已清除。" -ForegroundColor Green
+        Write-Host "ChatExcel 已卸载：当前项目启动项、加载项注册、项目依赖和运行时文件已清除。" -ForegroundColor Green
         Write-Host "源代码和本地开发证书已保留。"
     }
 }

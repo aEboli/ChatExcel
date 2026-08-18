@@ -308,6 +308,12 @@ test("任务窗格启动时探测提供方连通性，并同步模型和设置�
   assert.match(taskpaneCss, /#model-button\[data-provider-connectivity="error"\] > img,[\s\S]*?#settings-button\[data-provider-connectivity="error"\] > img\s*\{[\s\S]*?filter:/);
 });
 
+test("任务窗格在登录启动竞态中有限重试本地配置", () => {
+  assert.match(taskpaneJs, /const STARTUP_CONFIG_RETRY_DELAYS_MS = \[250, 500, 1_000, 2_000, 3_000\];/);
+  assert.match(taskpaneJs, /async function requestConfig\(\{ retryDuringStartup = false \} = \{\}\)[\s\S]*?error instanceof TypeError[\s\S]*?setTimeout/);
+  assert.match(taskpaneJs, /refreshConfig\(\{ retryDuringStartup: true \}\)/);
+});
+
 test("配置读取失败时红色设置入口仍可打开并提供修复表单", () => {
   const openSettingsSource = taskpaneJs.match(
     /function openSettings\(\) \{[\s\S]*?\n\}/,

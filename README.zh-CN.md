@@ -2,7 +2,7 @@
 
 <div align="center">
 
-[![版本](https://img.shields.io/badge/version-v0.0.4-107c41.svg)](https://github.com/aEboli/ChatExcel/releases/tag/v0.0.4)
+[![版本](https://img.shields.io/badge/version-v0.0.5-107c41.svg)](https://github.com/aEboli/ChatExcel/releases/tag/v0.0.5)
 [![Node.js](https://img.shields.io/badge/Node.js-%3E%3D20-339933.svg)](https://nodejs.org/)
 [![Microsoft Excel](https://img.shields.io/badge/Microsoft-Excel-217346.svg)](https://www.microsoft.com/microsoft-365/excel)
 [![Windows](https://img.shields.io/badge/Windows-x64-0078d4.svg)](https://github.com/aEboli/ChatExcel/releases)
@@ -12,11 +12,18 @@
 
 不离开 Excel，读取当前工作表、理解工作簿上下文、粘贴参考图片，并在明确边界内完成可审计的修改。
 
-最新打包发行版：`v0.0.4`
+最新打包发行版：`v0.0.5`
 
 </div>
 
 > 这份中文 README 是项目的详细使用说明；英文概览见 [README.md](README.md)。
+
+## v0.0.5 更新
+
+- **登录后保持就绪：** 默认启动成功，或 `.xlsx`、`.xlsm`、`.xlsb` 侧载成功后，会登记当前用户后台服务启动项。下次登录 Windows 时它只启动本地服务，不会打开 Excel 或重新旁加载。
+- **可靠的回环地址：** Office 清单和原生 `.xls` 伴随窗格统一使用服务实际监听的 `https://127.0.0.1:3210`，避免 Windows 将 `localhost` 解析到未监听的 `::1`。
+- **启动竞态恢复：** Excel 初始化期间如果本地配置暂时不可达，任务窗格会在有界时间内重试；永久 HTTP 错误和配置错误仍会明确显示。
+- **精确清理：** 源码安装器只移除精确属于当前项目目录的启动项。手工执行 `npm run start:local` 和 `npm run sideload` 仍是当前登录会话的开发流程，不会登记登录启动项。
 
 ## v0.0.4 更新
 
@@ -93,16 +100,18 @@ Microsoft Excel 任务窗格（Office.js）
 
 ### Windows 打包启动器（普通用户）
 
-1. 从 [GitHub Releases](https://github.com/aEboli/ChatExcel/releases/tag/v0.0.4) 下载 `ChatExcel-Launcher-0.0.4-win-x64.zip`。
+1. 从 [GitHub Releases](https://github.com/aEboli/ChatExcel/releases/tag/v0.0.5) 下载 `ChatExcel-Launcher-0.0.5-win-x64.zip`。
 2. 需要时先用旁边的 `.sha256` 文件校验，再完整解压整个目录。
 3. 双击 `ChatExcel Launcher.exe`。
 4. 在 Excel 的 `ChatEx` 功能区组点击 `Open ChatExcel`。
+
+默认启动成功，或 `.xlsx`、`.xlsm`、`.xlsb` 侧载成功后，会为当前 Windows 用户登记后台服务启动项。以后登录 Windows 后，可直接打开 Excel 并点击 ChatExcel，无需先手动运行 Launcher；该启动项只启动本机服务，不会自动打开 Excel。移动解压目录后，请从新位置重新运行一次 Launcher 以更新路径。原生 `.xls` 伴随路径本身不会登记该项；请先完成一次默认启动或现代工作簿启动。
 
 发行包内置 Node.js 运行时和启动器依赖；目标电脑仍需 Windows 10/11、Microsoft Excel 2019 或 Microsoft 365 桌面版。WPS 不支持；已有 `.xls` 工作簿还需要 WebView2。
 
 ### 源码开发
 
-首次使用 Windows 源码目录时，可直接双击仓库根目录的 `首次安装并启动 ChatExcel.cmd`。启动器会显示数字菜单：`1` 安装或重装项目并在 Excel 中旁加载 ChatExcel，`2` 注销本项目加载项、停止本地服务并删除项目依赖，`3` 退出。执行卸载前请关闭所有 Excel 窗口；卸载不会删除源码或本地开发证书。
+首次使用 Windows 源码目录时，可直接双击仓库根目录的 `首次安装并启动 ChatExcel.cmd`。启动器会显示数字菜单：`1` 安装或重装项目并在 Excel 中旁加载 ChatExcel，同时登记当前用户后台服务启动项；`2` 精确移除本项目启动项、注销加载项、停止本地服务并删除项目依赖；`3` 退出。执行卸载前请关闭所有 Excel 窗口；卸载不会删除源码或本地开发证书。
 
 ```powershell
 git clone https://github.com/aEboli/ChatExcel.git
@@ -116,7 +125,9 @@ npm run start:local
 npm run sideload
 ```
 
-本地伴随服务只监听 `https://localhost:3210`。停止本项目服务和恢复守护器：
+以上手工命令是当前登录会话的开发流程，不会登记登录启动项；需要持续保持服务就绪时，请使用 `首次安装并启动 ChatExcel.cmd` 的菜单 `1`。
+
+本地伴随服务只监听 `https://127.0.0.1:3210`。清单也固定使用该 IPv4 回环地址，避免 Windows 将 `localhost` 优先解析到未监听的 `::1`。以下命令会显式停止本项目服务和恢复守护器；本次登录会话内不会因 Excel 点击而重新启动，下次登录仍会按已登记的当前用户启动项恢复。若 Windows“启动应用”禁用了 `ChatExcel Local Service`，请重新启用后再登录；手动运行安装器或 Launcher 可以恢复登记路径，但不会覆盖用户手动禁用的启动项：
 
 ```powershell
 npm run stop:local
@@ -212,7 +223,7 @@ git diff --check
 
 ## 版本、更新日志与许可证
 
-- 最新打包发行版：[ChatExcel v0.0.4](https://github.com/aEboli/ChatExcel/releases/tag/v0.0.4)
+- 最新打包发行版：[ChatExcel v0.0.5](https://github.com/aEboli/ChatExcel/releases/tag/v0.0.5)
 - 更新日志：[CHANGELOG.zh-CN.md](CHANGELOG.zh-CN.md)
 - English overview：[README.md](README.md)
 - 当前尚未选择许可证；在组织外分发前请补充许可证文件。

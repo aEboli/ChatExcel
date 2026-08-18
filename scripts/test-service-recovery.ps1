@@ -13,8 +13,9 @@ $stopPath = Join-Path $runtimeDirectory "service.stop"
 $probeProgramPath = Join-Path $runtimeDirectory "service-recovery-probe.cjs"
 $probeStdoutPath = Join-Path $runtimeDirectory "service-recovery-probe.stdout.log"
 $probeStderrPath = Join-Path $runtimeDirectory "service-recovery-probe.stderr.log"
+$serviceAddress = "127.0.0.1"
 $servicePort = 3210
-$healthUrl = "https://localhost:$servicePort/api/health"
+$healthUrl = "https://${serviceAddress}:$servicePort/api/health"
 $nodePath = (Get-Command node -ErrorAction Stop).Source
 
 function Get-Listener {
