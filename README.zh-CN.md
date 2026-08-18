@@ -2,7 +2,7 @@
 
 <div align="center">
 
-[![版本](https://img.shields.io/badge/version-v0.0.3-107c41.svg)](https://github.com/aEboli/ChatExcel/releases/tag/v0.0.3)
+[![版本](https://img.shields.io/badge/version-v0.0.4-107c41.svg)](https://github.com/aEboli/ChatExcel/releases/tag/v0.0.4)
 [![Node.js](https://img.shields.io/badge/Node.js-%3E%3D20-339933.svg)](https://nodejs.org/)
 [![Microsoft Excel](https://img.shields.io/badge/Microsoft-Excel-217346.svg)](https://www.microsoft.com/microsoft-365/excel)
 [![Windows](https://img.shields.io/badge/Windows-x64-0078d4.svg)](https://github.com/aEboli/ChatExcel/releases)
@@ -12,15 +12,15 @@
 
 不离开 Excel，读取当前工作表、理解工作簿上下文、粘贴参考图片，并在明确边界内完成可审计的修改。
 
-最新打包发行版：`v0.0.3` · 当前源码快照：`v0.0.4`（尚未打包为 GitHub Release）
+最新打包发行版：`v0.0.4`
 
 </div>
 
 > 这份中文 README 是项目的详细使用说明；英文概览见 [README.md](README.md)。
 
-## v0.0.4 源码更新
+## v0.0.4 更新
 
-本次仅同步源码，不创建新的 Windows 启动器发行包；`v0.0.3` 仍是可下载的最新 GitHub Release。
+本发行版将以下已验证的 `main` 改动同步到 GitHub 和 Windows x64 启动器。
 
 - **可恢复的系统配置：** 设置页可选择自动（优先 Codex CLI）、Codex CLI 或 Claude CLI。Codex 可从同目录 `auth.json` 读取 `OPENAI_API_KEY`，Claude 读取当前用户的 Anthropic 配置；令牌始终只在本地服务中使用。
 - **源码安装启动器：** `首次安装并启动 ChatExcel.cmd` 为 Windows 源码目录提供安装、修复和卸载菜单；在打开 Excel 前校验 Node.js、依赖、开发证书、清单和旁加载就绪状态。
@@ -35,8 +35,6 @@
 - **协议专属思考参数：** 保留 Qwen 思考开关、DeepSeek V4 推理模式和 OpenAI 思考等级；切换模型或刷新目录后会自动纠正失效选择。
 - **更严格的工作簿修改：** 范围型修改先做 `5,000` 个单元格影响保护，成功后返回 `impact` 和读回的 `verification` 摘要。
 - **更紧凑的任务窗格：** 在 400px 和 320px 宽度下收紧固定区域，为对话和工作簿结果保留更多空间；正文保持 12px/17px，桌面端常用命中区域不小于 24px，并保留焦点和 reduced-motion 行为。
-
-本发行版将以上已验证的 `main` 改动同步到 GitHub 和 Windows x64 启动器。
 
 ## 项目概述
 
@@ -95,7 +93,7 @@ Microsoft Excel 任务窗格（Office.js）
 
 ### Windows 打包启动器（普通用户）
 
-1. 从 [GitHub Releases](https://github.com/aEboli/ChatExcel/releases/tag/v0.0.3) 下载 `ChatExcel-Launcher-0.0.3-win-x64.zip`。
+1. 从 [GitHub Releases](https://github.com/aEboli/ChatExcel/releases/tag/v0.0.4) 下载 `ChatExcel-Launcher-0.0.4-win-x64.zip`。
 2. 需要时先用旁边的 `.sha256` 文件校验，再完整解压整个目录。
 3. 双击 `ChatExcel Launcher.exe`。
 4. 在 Excel 的 `ChatEx` 功能区组点击 `Open ChatExcel`。
@@ -214,7 +212,7 @@ git diff --check
 
 ## 版本、更新日志与许可证
 
-- 最新打包发行版：[ChatExcel v0.0.3](https://github.com/aEboli/ChatExcel/releases/tag/v0.0.3)
+- 最新打包发行版：[ChatExcel v0.0.4](https://github.com/aEboli/ChatExcel/releases/tag/v0.0.4)
 - 更新日志：[CHANGELOG.zh-CN.md](CHANGELOG.zh-CN.md)
 - English overview：[README.md](README.md)
 - 当前尚未选择许可证；在组织外分发前请补充许可证文件。

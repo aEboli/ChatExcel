@@ -22,9 +22,9 @@ internal static class Program
     public static int Main(string[] args)
     {
         LauncherLog? log = null;
+        WorkbookLaunchRequest? request = null;
         try
         {
-            WorkbookLaunchRequest? request = null;
             try
             {
                 request = WorkbookLaunchRequest.Parse(args);

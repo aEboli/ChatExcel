@@ -2,9 +2,9 @@
 
 这里记录 ChatExcel 的重要版本变化。
 
-## [0.0.4] - 2026-08-18
+## [0.0.4] - 2026-08-19
 
-> 本次仅同步源码，不创建 `v0.0.4` GitHub Release 或 Windows 启动器发行包；`v0.0.3` 仍是最新打包发行版。
+> 已正式发布为 GitHub Release `v0.0.4`，包含 Windows x64 启动器发行包及对应 SHA-256 校验文件。
 
 ### 新增
 
@@ -17,6 +17,7 @@
 - 系统配置失败时仍显示自定义 API 表单；系统 CLI 来源会持久化，切换失败时会回滚原有设置。
 - Codex 配置兼容 `ultra` 思考等级；已验证的 DeepSeek V4 元数据可在设置页显示单次最大输出能力。
 - 旁加载会先启动或复用项目本地服务，再注册加载项并打开 Excel；证书验证继续兼容声明的 Node.js 20 基线。
+- 修复 Launcher 的错误处理作用域，确保包含 `--service-only` 处理时 Windows x64 发行构建可以编译。
 
 ### 已知限制
 
@@ -89,3 +90,4 @@ ChatExcel 首个 GitHub 发行版。
 [0.0.1]: https://github.com/aEboli/ChatExcel/releases/tag/v0.0.1
 [0.0.2]: https://github.com/aEboli/ChatExcel/releases/tag/v0.0.2
 [0.0.3]: https://github.com/aEboli/ChatExcel/releases/tag/v0.0.3
+[0.0.4]: https://github.com/aEboli/ChatExcel/releases/tag/v0.0.4

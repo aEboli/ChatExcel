@@ -2,9 +2,9 @@
 
 All notable changes to ChatExcel are documented here.
 
-## [0.0.4] - 2026-08-18
+## [0.0.4] - 2026-08-19
 
-> Source synchronization only. No `v0.0.4` GitHub Release or Windows launcher package is published with this entry; `v0.0.3` remains the latest packaged release.
+> Published as GitHub Release `v0.0.4` with the Windows x64 launcher package and a matching SHA-256 file.
 
 ### Added
 
@@ -17,6 +17,7 @@ All notable changes to ChatExcel are documented here.
 - System-configuration failures now keep the custom API form available, and the selected CLI source is persisted with rollback on a failed source switch.
 - Codex configuration accepts the `ultra` reasoning level; verified DeepSeek V4 metadata can show the maximum output capability in Settings.
 - Sideloading starts or reuses the project-local service before registering the add-in and opening Excel. Certificate verification remains compatible with the declared Node.js 20 baseline.
+- Fixed the launcher error-handling scope so the Windows x64 release build compiles when `--service-only` handling is present.
 
 ### Known limitations
 
@@ -89,3 +90,4 @@ The first GitHub release of the local Excel agent.
 [0.0.1]: https://github.com/aEboli/ChatExcel/releases/tag/v0.0.1
 [0.0.2]: https://github.com/aEboli/ChatExcel/releases/tag/v0.0.2
 [0.0.3]: https://github.com/aEboli/ChatExcel/releases/tag/v0.0.3
+[0.0.4]: https://github.com/aEboli/ChatExcel/releases/tag/v0.0.4

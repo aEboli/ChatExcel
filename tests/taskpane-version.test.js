@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-const [packageJson, packageLock, taskpaneHtml, taskpaneCss, taskpaneJs, appInfo, httpApp] = await Promise.all([
+const [packageJson, packageLock, taskpaneHtml, taskpaneCss, taskpaneJs, appInfo, httpApp, launcherProject] = await Promise.all([
   readFile(new URL("../package.json", import.meta.url), "utf8").then(JSON.parse),
   readFile(new URL("../package-lock.json", import.meta.url), "utf8").then(JSON.parse),
   readFile(new URL("../src/taskpane/taskpane.html", import.meta.url), "utf8"),
@@ -10,6 +10,7 @@ const [packageJson, packageLock, taskpaneHtml, taskpaneCss, taskpaneJs, appInfo,
   readFile(new URL("../src/taskpane/taskpane.js", import.meta.url), "utf8"),
   readFile(new URL("../src/shared/app-info.js", import.meta.url), "utf8"),
   readFile(new URL("../src/server/http-app.js", import.meta.url), "utf8"),
+  readFile(new URL("../launcher/ChatExcelLauncher.csproj", import.meta.url), "utf8"),
 ]);
 
 test("发行版本从根包同步到锁文件和健康接口", () => {
@@ -18,6 +19,14 @@ test("发行版本从根包同步到锁文件和健康接口", () => {
   assert.equal(packageLock.packages[""].version, packageJson.version);
   assert.match(appInfo, /APP_VERSION = packageManifest\.version/);
   assert.match(httpApp, /version:\s*APP_VERSION/);
+});
+
+test("Launcher 默认程序集版本从根包同步", () => {
+  const version = packageJson.version;
+
+  assert.match(launcherProject, new RegExp(`<Version>${version}</Version>`));
+  assert.match(launcherProject, new RegExp(`<AssemblyVersion>${version}\\.0</AssemblyVersion>`));
+  assert.match(launcherProject, new RegExp(`<FileVersion>${version}\\.0</FileVersion>`));
 });
 
 test("版本槽仅位于设置页顶部", () => {

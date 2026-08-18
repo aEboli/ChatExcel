@@ -2,7 +2,7 @@
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/version-v0.0.3-107c41.svg)](https://github.com/aEboli/ChatExcel/releases/tag/v0.0.3)
+[![Version](https://img.shields.io/badge/version-v0.0.4-107c41.svg)](https://github.com/aEboli/ChatExcel/releases/tag/v0.0.4)
 [![Node.js](https://img.shields.io/badge/Node.js-%3E%3D20-339933.svg)](https://nodejs.org/)
 [![Microsoft Excel](https://img.shields.io/badge/Microsoft-Excel-217346.svg)](https://www.microsoft.com/microsoft-365/excel)
 [![Windows](https://img.shields.io/badge/Windows-x64-0078d4.svg)](https://github.com/aEboli/ChatExcel/releases)
@@ -12,15 +12,15 @@
 
 Inspect sheets, reason over workbook context, paste reference images, and perform controlled Excel edits from one compact task pane.
 
-Latest packaged release: `v0.0.3` · current source snapshot: `v0.0.4` (not yet packaged as a GitHub Release)
+Latest packaged release: `v0.0.4`
 
 </div>
 
 > The Chinese README is the primary, more detailed guide: [README.zh-CN.md](README.zh-CN.md). This English page is a concise project overview.
 
-## What's new in the v0.0.4 source snapshot
+## What's new in v0.0.4
 
-This source synchronization does not publish a new Windows launcher package. `v0.0.3` remains the latest downloadable GitHub Release.
+This release packages the verified `main` changes below for GitHub users and the Windows x64 launcher.
 
 - **Recoverable system configuration:** Settings can use Automatic (Codex CLI first), Codex CLI, or Claude CLI sources. Codex can load `OPENAI_API_KEY` from its sibling `auth.json`, while Claude uses the current user's Anthropic settings. Tokens remain in the local service.
 - **Source setup launcher:** `首次安装并启动 ChatExcel.cmd` provides a Windows install, repair, and uninstall menu for a source checkout. It validates Node.js, dependencies, the development certificate, the manifest, and sideload readiness before opening Excel.
@@ -35,8 +35,6 @@ This source synchronization does not publish a new Windows launcher package. `v0
 - **Protocol-specific reasoning:** ChatExcel preserves provider controls such as Qwen thinking toggles, DeepSeek V4 reasoning modes, and OpenAI reasoning levels without silently reusing an invalid selection after a model change.
 - **Stricter workbook mutations:** range-changing tools enforce a `5,000`-cell impact boundary and report `impact` plus read-back `verification` data.
 - **Compact task pane:** tighter fixed areas preserve more room for conversation and workbook results at 400px and 320px widths while retaining 12px/17px message text, 24px desktop hit targets, focus states, and reduced-motion behavior.
-
-This release packages the verified `main` changes above for GitHub users and the Windows x64 launcher.
 
 ## What ChatExcel does
 
@@ -95,7 +93,7 @@ Provider catalogs and compatible gateways vary. Model discovery or a successful 
 
 ### Packaged Windows launcher
 
-1. Download `ChatExcel-Launcher-0.0.3-win-x64.zip` from [GitHub Releases](https://github.com/aEboli/ChatExcel/releases/tag/v0.0.3).
+1. Download `ChatExcel-Launcher-0.0.4-win-x64.zip` from [GitHub Releases](https://github.com/aEboli/ChatExcel/releases/tag/v0.0.4).
 2. Verify the adjacent `.sha256` file if needed, then extract the whole archive.
 3. Run `ChatExcel Launcher.exe`.
 4. In Excel, open the `ChatEx` ribbon group and choose `Open ChatExcel`.
@@ -203,7 +201,7 @@ git diff --check
 
 ## Release and license
 
-- Latest packaged release: [ChatExcel v0.0.3](https://github.com/aEboli/ChatExcel/releases/tag/v0.0.3)
+- Latest packaged release: [ChatExcel v0.0.4](https://github.com/aEboli/ChatExcel/releases/tag/v0.0.4)
 - Changelog: [CHANGELOG.md](CHANGELOG.md)
 - Detailed Chinese guide: [README.zh-CN.md](README.zh-CN.md)
 - No license has been selected. Add a license before distributing the project outside the owning organization.
