@@ -276,7 +276,7 @@ test("任务窗格恢复并单独持久化审批偏好", () => {
 
 test("审批请求保持自动告知直执和需审批手动决定", () => {
   const requestApprovalSource = taskpaneJs.match(
-    /function requestApproval\(call, \{ signal \}\) \{[\s\S]*?\n\}\n\nasync function safeExecuteTool/,
+    /function requestApproval\(call, \{ signal \}\) \{[\s\S]*?\r?\n\}\r?\n\r?\nasync function safeExecuteTool/,
   )?.[0];
 
   assert.ok(requestApprovalSource, "应能定位 requestApproval 函数");
